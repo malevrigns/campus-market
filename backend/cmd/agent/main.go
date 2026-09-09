@@ -47,6 +47,9 @@ type autoApprover struct{}
 func (autoApprover) Approve(context.Context, string, capability.Capability, string) bool { return true }
 
 func main() {
+	if os.Getenv("ALLOW_UNSAFE_LEGACY_DEMO") != "true" || os.Getenv("APP_ENV") == "production" {
+		log.Fatal("This is a legacy in-memory teaching demo. Run go run ./cmd/server for the campus application.")
+	}
 	reg := capability.NewRegistry()
 	reg.Register(capability.Capability{Name: "order.query", Version: "v1", Description: "query order status", Risk: capability.RiskRead, Requires: []string{"order.read"}})
 	reg.Register(capability.Capability{Name: "order.refund", Version: "v1", Description: "refund an order", Risk: capability.RiskIrreversible, Requires: []string{"order.refund"}})
@@ -80,7 +83,10 @@ func main() {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Accept")
-			if r.Method == "OPTIONS" { w.WriteHeader(http.StatusNoContent); return }
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			h.ServeHTTP(w, r)
 		})
 	}

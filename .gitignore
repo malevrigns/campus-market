@@ -37,3 +37,13 @@ Thumbs.db
 
 # logs
 *.log
+
+# Runtime data and private configuration
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.pem
+secrets/
+frontend/test-results/
+frontend/playwright-report/

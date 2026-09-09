@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/.cache
+**/*.exe
+**/dist
+**/data
+**/test-results
+**/playwright-report
+**/*.log
+**/*.db*
+**/*.pem
+.env
+secrets
+docs

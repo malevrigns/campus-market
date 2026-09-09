@@ -15,6 +15,9 @@ import (
 )
 
 func main() {
+	if os.Getenv("ALLOW_UNSAFE_LEGACY_DEMO") != "true" || os.Getenv("APP_ENV") == "production" {
+		log.Fatal("This is a legacy in-memory teaching demo. Run go run ./cmd/server for the campus application.")
+	}
 	sink := server.MemorySink{}
 	h := hub.New(sink, 90*time.Second) // online-state TTL
 
@@ -23,7 +26,10 @@ func main() {
 	{
 		routes := srv.Routes()
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if fn, ok := routes[r.Method+" "+r.URL.Path]; ok { fn(w, r); return }
+			if fn, ok := routes[r.Method+" "+r.URL.Path]; ok {
+				fn(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		})
 	}
@@ -38,7 +44,10 @@ func main() {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Accept")
-			if r.Method == "OPTIONS" { w.WriteHeader(http.StatusNoContent); return }
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			h.ServeHTTP(w, r)
 		})
 	}

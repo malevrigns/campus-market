@@ -1,0 +1,45 @@
+import { defineConfig } from '@playwright/test'
+export default defineConfig({
+  testDir: './e2e',
+  timeout: 45000,
+  workers: 1,
+  fullyParallel: false,
+  use: {
+    baseURL: 'http://127.0.0.1:15173',
+    headless: true,
+    ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+  },
+  webServer: [
+    {
+      command: 'go run ./cmd/testfixture && go run ./cmd/server',
+      cwd: '../backend',
+      url: 'http://127.0.0.1:18081/api/v1/health',
+      timeout: 90000,
+      reuseExistingServer: false,
+      env: {
+        HTTP_ADDR: '127.0.0.1:18081',
+        DATABASE_PATH: `data/e2e-${process.pid}.db`,
+        SEED_DEMO: 'true',
+        APP_ENV: 'development',
+        PUBLIC_ORIGIN: '',
+        ALIPAY_APP_ID: '',
+        ALIPAY_SELLER_ID: '',
+        ALIPAY_PRIVATE_KEY_FILE: '',
+        ALIPAY_PUBLIC_KEY_FILE: '',
+        MODEL_API_KEY: '',
+        MODEL_BASE_URL: '',
+        MODEL_NAME: '',
+        AGENT_CONNECTIONS_FILE: '',
+        ADMIN_USER_IDS: 'e2e_admin',
+      },
+    },
+    {
+      command: 'npm run dev -- --port 15173 --strictPort',
+      url: 'http://127.0.0.1:15173',
+      reuseExistingServer: false,
+      env: { API_TARGET: 'http://127.0.0.1:18081' },
+    },
+  ],
+})

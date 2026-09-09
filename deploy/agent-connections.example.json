@@ -1,0 +1,21 @@
+{
+  "providers": {
+    "default": {
+      "base_url": "https://your-model-provider.example/v1",
+      "model": "your-chat-model",
+      "api_key_env": "MODEL_API_KEY"
+    },
+    "vision": {
+      "base_url": "https://your-model-provider.example/v1",
+      "model": "your-vision-model",
+      "api_key_env": "VISION_MODEL_API_KEY"
+    }
+  },
+  "mcp_servers": {
+    "campus_knowledge": {
+      "url": "https://your-trusted-mcp.example/mcp",
+      "token_env": "CAMPUS_KNOWLEDGE_TOKEN",
+      "public_data_only": true
+    }
+  }
+}

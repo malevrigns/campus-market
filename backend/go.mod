@@ -1,10 +1,27 @@
 module qingfly/edu-mall
 
-go 1.23
+go 1.26.0
 
-// 说明：本模块的核心业务逻辑（订单状态机、支付回调幂等、IM 消息一致性、
-// Agent 引擎、统一鉴权、雪花 ID）均以 Go 标准库实现并保证 `go build ./...` 通过，
-// 便于在无外网环境验证。Gin/GORM/go-zero/eino/Nchan 等框架依赖在各服务的
-// adapter 层以接口形式接入（见各 internal/* 的 interface.go），生产部署时
-// 替换为真实驱动即可，不影响核心逻辑与测试。
+toolchain go1.26.8
 
+// Runtime: cmd/server. Legacy teaching packages are not mounted by the application.
+
+require (
+	github.com/coder/websocket v1.8.15
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	golang.org/x/crypto v0.57.0
+	modernc.org/sqlite v1.58.0
+)
+
+require (
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	modernc.org/libc v1.75.6 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
+)

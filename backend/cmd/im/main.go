@@ -21,6 +21,9 @@ func (logPusher) Push(_ context.Context, convID, excludeUserID string, msg *mode
 }
 
 func main() {
+	if os.Getenv("ALLOW_UNSAFE_LEGACY_DEMO") != "true" || os.Getenv("APP_ENV") == "production" {
+		log.Fatal("This is a legacy in-memory teaching demo. Run go run ./cmd/server for the campus application.")
+	}
 	svc := service.NewService(logPusher{})
 	mux := http.NewServeMux()
 	h := handler.New(svc)
@@ -51,7 +54,10 @@ func withCORS(h http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Accept")
-		if r.Method == "OPTIONS" { w.WriteHeader(http.StatusNoContent); return }
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		h.ServeHTTP(w, r)
 	})
 }

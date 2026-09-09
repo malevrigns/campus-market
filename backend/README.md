@@ -1,20 +1,14 @@
-# edu-mall · Go 微服务实战全栈项目骨架
+# 校园集市后端
 
-> 依据 qingfly.com《Go 微服务实战：商城 × AI Agent × IM 生产级全栈项目》(id=8) 的真实技术栈与架构，
-> 产出的**可编译、可运行、带核心逻辑单测**的生产级 Go 项目骨架。
->
-> - `go build ./...` ✅ 全绿 · `go vet ./...` ✅ 全绿
-> - 四个服务可独立运行：`mall` / `im` / `websocket` / `agent`
-> - 核心不变量有单元测试证明：**支付回调幂等**、**IM seq 单调 + clientMsgId 去重**
+当前应用入口为 `cmd/server`，使用 Go 1.26.8、SQLite WAL、bcrypt、真实 WebSocket 与 SSE。
 
-## 设计原则（对齐课程方法论）
+```powershell
+$env:SEED_DEMO='true'
+go run ./cmd/server
+```
 
+默认监听 `127.0.0.1:8081`。`GET /api/v1/health` 检查数据库；`GET /api/v1/config` 只公开支付/模型可用性，不返回密钥。
 
-...[Truncated]...
-e/engine` ReAct 循环 + Guardrail + Checkpoint + SSE |
-| Part 5 融合 | 统一身份契约（backend 唯一签发校验）落在 `internal/pkg/auth`，各服务透传 Principal |
+配置、运行和边界请看根目录 [README](../README.md)、[API 文档](../docs/api.md) 及 [生产说明](../docs/production-readiness.md)。部署文件在根目录 `compose.yaml`，原来的基础设施占位 Compose 已移除。
 
-## 一句话总结
-这套代码把课程的"先文档后代码、严格分层、统一响应、状态机、幂等、seq 一致性、Agent 治理"
-等工程方法论落成了**能跑起来、测得过的真实 Go 代码**——既是学习范本，也是可直接扩展的生产起点。
-
+`mall/`、`im/`、`ws/`、`agent/` 是原课程内核，测试仍保留，但其中的内存实现和 handler 不属于新应用。原 `cmd/mall`、`cmd/im`、`cmd/websocket`、`cmd/agent` 仅允许显式设置 `ALLOW_UNSAFE_LEGACY_DEMO=true` 的本地课程研究，`APP_ENV=production` 时仍禁止启动；不能用于真实身份、消息或资金处理。

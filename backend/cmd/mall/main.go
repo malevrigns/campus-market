@@ -7,8 +7,8 @@ package main
 import (
 	"log"
 	"net/http"
-	"strconv"
 	"os"
+	"strconv"
 
 	"qingfly/edu-mall/internal/pkg/snowflake"
 	"qingfly/edu-mall/mall/handler"
@@ -17,6 +17,9 @@ import (
 )
 
 func main() {
+	if os.Getenv("ALLOW_UNSAFE_LEGACY_DEMO") != "true" || os.Getenv("APP_ENV") == "production" {
+		log.Fatal("This is a legacy in-memory teaching demo. Run go run ./cmd/server for the campus application.")
+	}
 	// --- data layer (swap for GORM/MySQL in production) ---
 	orders := repository.NewMemoryOrderStore()
 	stock := repository.NewMemoryStockStore(map[string]int64{})
@@ -57,7 +60,10 @@ func main() {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Accept")
-			if r.Method == "OPTIONS" { w.WriteHeader(http.StatusNoContent); return }
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			h.ServeHTTP(w, r)
 		})
 	}
