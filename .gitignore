@@ -1,38 +1,39 @@
-# dependencies
+# ===== frontend (node) =====
 node_modules/
-.pnp
-.pnp.js
-
-# build output
 dist/
 dist-ssr/
 *.local
-
-# logs
-logs/
-*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+coverage/
+.cache/
+.env
+.env.local
+.env.*.local
 
-# editor & os
+# ===== backend (go) =====
+backend/*.exe
+backend/**/exe/
+backend/logs/
+backend/bin/
+*.exe
+!frontend/**/*.exe
+go.sum.bak
+vendor/
+
+# ===== editor & os =====
 .vscode/*
 !.vscode/extensions.json
 .idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# env
-.env
-.env.local
-.env.*.local
-
-# misc
-coverage/
-.cache/
-*.tsbuildinfo
+# logs
+*.log
