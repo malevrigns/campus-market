@@ -13,6 +13,7 @@
 ```powershell
 cd backend
 $env:SEED_DEMO = 'true'
+$env:AUTH_DELIVERY_MODE = 'local'
 go run ./cmd/server
 ```
 
@@ -33,12 +34,12 @@ npm run dev
 ## 已实现
 
 - 商城：搜索、分类/校区筛选、排序/分页、收藏、我的发布、JPG/PNG 上传、商品详情、下架。
-- 身份：邮箱密码注册/登录，bcrypt 散列、HttpOnly Cookie、服务端会话与注销、同源检查、限流。
+- 身份：邮箱/手机号验证码注册、密码或验证码登录、找回密码、联系方式验证绑定、bcrypt 散列、隔离的 HttpOnly 会话、用途绑定和单次验证码。支持 SMTP 与阿里云短信，详见 [账号验证](docs/account-verification.md)。
 - 订单：后端整数分计价、商品快照、事务预占防超卖、用户隔离幂等、15 分钟未付款超时、取消释放、面交/收货状态与审计记录。
 - 支付：后端支付宝 PC/H5 签名入口、RSA2 回调验签、商户/金额/交易号校验、持久去重、主动查单补偿、过期关单。**前端只提交商品和面交校区、打开支付地址并查询服务器状态。**
 - IM：真实双人会话、WebSocket 通知、持久消息、服务端 seq、发送者维度幂等、游标补拉、未读水位、断线重连及失败重发。
 - Agent：动态模型/内置工具/MCP 能力目录、管理员工作室、草稿/发布/版本恢复/停用、用户侧助手切换、逐 token SSE、多轮持久对话、运行快照、工具失败审计。未配置模型时没有假回答。详见 [动态 Agent 使用说明](docs/dynamic-agents.md)。
-- 界面：参考 [MotionSites 的公开 OYLA 电商预览](https://motionsites.ai/?prompt=oyla) 的商品摄影与留白，并采用深色、奶油白和浅绿色；不是付费源码的一比一复制。移动端双列商品、全屏聊天、底栏、安全区、减少动态效果、键盘焦点均有适配。
+- 界面：参考 [MotionSites 的公开 OYLA 电商预览](https://motionsites.ai/?prompt=oyla) 的商品摄影与留白，支持明暗主题切换与记忆。AI 通过可拖动悬浮图标在当前页对话。移动端双列商品、全屏 IM、底栏、安全区、减少动态效果、键盘焦点均有适配。
 
 ## 验证
 
@@ -58,7 +59,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Windows 如需使用已安装的 Chrome：先执行 `$env:PLAYWRIGHT_CHANNEL='chrome'`。端到端测试会启动独立的 `18081/15173` 服务和独立数据库，不调用真实收款或真实模型。Linux 可运行 `CGO_ENABLED=1 go test -race ./...`。
+Windows 如需使用已安装的 Chrome：先执行 `$env:PLAYWRIGHT_CHANNEL='chrome'`。端到端测试会启动独立的 `18091/15183` 服务和独立数据库，不调用真实收款、短信、邮件或模型。Linux 可运行 `CGO_ENABLED=1 go test -race ./...`。
 
 ## 目录
 

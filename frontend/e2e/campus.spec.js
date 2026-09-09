@@ -1,12 +1,15 @@
 import { test, expect } from '@playwright/test'
 
 async function register(page, name) {
-  await page.goto('/')
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.locator('.account-button').click()
   await page.getByRole('button', { name: '注册账号', exact: true }).click()
   await page.locator('input[name="name"]').fill(name)
   await page.locator('input[name="email"]').fill(`student-${Date.now()}@campus.test`)
   await page.locator('input[name="password"]').fill('E2e-strong-password-123')
+  await page.getByRole('button', { name: '获取验证码', exact: true }).click()
+  await page.getByRole('button', { name: '查看测试验证码', exact: true }).click()
+  await expect(page.locator('input[name="code"]')).toHaveValue(/^\d{6}$/)
   await page.getByRole('button', { name: '创建账号' }).click()
   await expect(page.locator('.account-button .avatar')).toBeVisible()
   await expect(page.locator('.ant-modal')).toBeHidden()
@@ -16,7 +19,7 @@ test('desktop and mobile layouts, search, demo boundary, reduced motion', async 
   page.on('pageerror', (e) => errors.push(e.message))
   for (const width of [1440, 768, 390, 360]) {
     await page.setViewportSize({ width, height: 900 })
-    await page.goto('/')
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.product-card')).toHaveCount(8)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
     await page.screenshot({ path: `test-results/home-${width}.png`, fullPage: true })
@@ -61,7 +64,7 @@ test('real upload, two-account IM, server order, cancellation and persistence', 
 
   const buyerContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
-    baseURL: 'http://127.0.0.1:15173',
+    baseURL: new URL(page.url()).origin,
   })
   const buyer = await buyerContext.newPage()
   await register(buyer, '测试买家')
@@ -75,7 +78,7 @@ test('real upload, two-account IM, server order, cancellation and persistence', 
   await buyer.getByRole('textbox', { name: '输入消息' }).fill('同学你好，可以在东区面交吗？')
   await buyer.getByRole('button', { name: '发送消息' }).click()
   await expect(buyer.locator('.message-bubble').getByText('同学你好，可以在东区面交吗？')).toBeVisible()
-  await page.goto('/#messages')
+  await page.goto('/#messages', { waitUntil: 'domcontentloaded' })
   await page.locator('.conversation-list>button').click()
   await expect(page.locator('.message-bubble').getByText('同学你好，可以在东区面交吗？')).toBeVisible()
   await page.getByRole('textbox', { name: '输入消息' }).fill('可以，明天下午图书馆门口见。')
@@ -88,7 +91,7 @@ test('real upload, two-account IM, server order, cancellation and persistence', 
   await buyer.locator('.conversation-list>button').click()
   await expect(buyer.locator('.message-bubble')).toHaveCount(2)
 
-  await buyer.goto('/')
+  await buyer.goto('/', { waitUntil: 'domcontentloaded' })
   await buyer.getByRole('textbox', { name: '搜索好物' }).fill('双账号验收')
   await expect(buyer.locator('.product-card')).toHaveCount(1)
   await buyer.locator('.product-open').click()
@@ -104,7 +107,7 @@ test('real upload, two-account IM, server order, cancellation and persistence', 
   await expect(buyer.locator('.order-status')).toHaveText('已取消')
   await buyer.reload()
   await expect(buyer.locator('.order-status')).toHaveText('已取消')
-  await buyer.goto('/#agent')
+  await buyer.goto('/#agent', { waitUntil: 'domcontentloaded' })
   await expect(buyer.getByRole('button', { name: '发送问题' })).toBeDisabled()
   await buyer.screenshot({ path: 'test-results/mobile-agent.png' })
   expect(await buyer.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()

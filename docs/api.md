@@ -6,9 +6,13 @@
 
 | 方法/路径 | 请求 | 说明 |
 |---|---|---|
-| POST `/auth/register` | `name,email,password` | 昵称 2–24 字，密码 10–72 字节；创建 HttpOnly 会话 |
-| POST `/auth/login` | `email,password` | 登录；与所有模块共享会话 |
-| GET `/auth/me` | 无 | 返回当前 `id,name,email`；匿名 401 |
+| POST `/auth/codes` | `channel,target,purpose` | 邮箱/短信验证码；用途与地址绑定，见 [验证码契约](account-verification.md) |
+| POST `/auth/register` | `name,password,channel,target,challenge_id,code` | 昵称 1–24 字，密码至少 8 字符且至多 72 字节；先验证联系方式再建账号 |
+| POST `/auth/login` | `account,password` | 邮箱或手机号密码登录，兼容旧 email 字段 |
+| POST `/auth/code-login` | `channel,target,challenge_id,code` | 已有账号验证码登录 |
+| POST `/auth/password/reset` | 上述验证码证明及 password | 修改密码并撤销会话与未用验证码 |
+| POST `/auth/bind` | `channel,target,challenge_id,code` | 登录后验证/绑定邮箱或手机号 |
+| GET `/auth/me` | 无 | 返回 `id,name,email,phone,email_verified,phone_verified,is_admin`；匿名 401 |
 | POST `/auth/logout` | `{}` | 删除服务端会话，清除 Cookie |
 | GET `/products` | `q,category,campus,sort,offset` | 24 条分页；sort 为 new/price-asc/price-desc |
 | GET `/products?saved=1` | 同上 | 当前用户收藏，包括已售/下架商品 |

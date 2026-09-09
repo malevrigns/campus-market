@@ -18,6 +18,8 @@ import (
 )
 
 type Config struct {
+	AuthDelivery                                                                  DeliveryConfig
+	AuthCodeSecret                                                                string
 	AdminUserIDs                                                                  string
 	ModelProviders                                                                map[string]ModelProvider
 	MCPServers                                                                    map[string]MCPServer
@@ -29,15 +31,16 @@ type Config struct {
 	ModelURL, ModelKey, ModelName                                                 string
 }
 type Server struct {
-	uploadSlots chan struct{}
-	trusted     []netip.Prefix
-	db          *sql.DB
-	cfg         Config
-	mux         *http.ServeMux
-	pay         *Alipay
-	live        *LiveHub
-	limits      *limiter
-	client      *http.Client
+	verification *verificationState
+	uploadSlots  chan struct{}
+	trusted      []netip.Prefix
+	db           *sql.DB
+	cfg          Config
+	mux          *http.ServeMux
+	pay          *Alipay
+	live         *LiveHub
+	limits       *limiter
+	client       *http.Client
 }
 type apiError struct {
 	status  int
@@ -76,6 +79,9 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	}
 	s := &Server{db: db, cfg: cfg, mux: http.NewServeMux(), pay: pay, live: NewLiveHub(), limits: &limiter{entries: map[string]window{}}, client: &http.Client{Timeout: 90 * time.Second}}
 	s.uploadSlots = make(chan struct{}, 2)
+	if e = s.initVerification(); e != nil {
+		return nil, e
+	}
 	if e = s.initAgentCatalog(); e != nil {
 		return nil, e
 	}
@@ -97,6 +103,11 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	s.route("GET /api/v1/config", false, s.config)
 	s.route("POST /api/v1/auth/register", false, s.register)
 	s.route("POST /api/v1/auth/login", false, s.login)
+	s.route("POST /api/v1/auth/codes", false, s.requestCode)
+	s.route("POST /api/v1/auth/code-login", false, s.codeLogin)
+	s.route("POST /api/v1/auth/password/reset", false, s.resetPassword)
+	s.route("POST /api/v1/auth/dev-inbox", false, s.devInbox)
+	s.route("POST /api/v1/auth/bind", true, s.bindIdentity)
 	s.route("GET /api/v1/auth/me", true, s.me)
 	s.route("POST /api/v1/auth/logout", true, s.logout)
 	s.route("GET /api/v1/products", false, s.products)
@@ -177,7 +188,7 @@ func (s *Server) Handler() http.Handler {
 		if r.URL.Path != "/api/v1/health" {
 			key := s.clientIP(r)
 			max := 600
-			if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") && r.Method == "POST" {
+			if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") && r.Method == "POST" && r.URL.Path != "/api/v1/auth/codes" && r.URL.Path != "/api/v1/auth/dev-inbox" {
 				key += "auth"
 				max = 30
 			}
@@ -238,7 +249,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request, _ *User) error {
 	return result(w, 200, map[string]any{"status": "ok"})
 }
 func (s *Server) config(w http.ResponseWriter, r *http.Request, _ *User) error {
-	return result(w, 200, map[string]any{"payments": map[string]bool{"alipay": s.pay != nil}, "agent_available": s.cfg.ModelKey != "" && s.cfg.ModelName != "" && s.cfg.ModelURL != "", "categories": categories, "campuses": campuses})
+	return result(w, 200, map[string]any{"payments": map[string]bool{"alipay": s.pay != nil}, "agent_available": s.cfg.ModelKey != "" && s.cfg.ModelName != "" && s.cfg.ModelURL != "", "categories": categories, "campuses": campuses, "auth": map[string]any{"email_code": s.verification.email, "sms_code": s.verification.sms, "local_inbox": s.verification.local, "password_min_length": 8}})
 }
 
 type window struct {

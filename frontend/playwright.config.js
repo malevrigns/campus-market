@@ -5,7 +5,7 @@ export default defineConfig({
   workers: 1,
   fullyParallel: false,
   use: {
-    baseURL: 'http://127.0.0.1:15173',
+    baseURL: 'http://127.0.0.1:15183',
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     trace: 'retain-on-failure',
@@ -15,11 +15,11 @@ export default defineConfig({
     {
       command: 'go run ./cmd/testfixture && go run ./cmd/server',
       cwd: '../backend',
-      url: 'http://127.0.0.1:18081/api/v1/health',
+      url: 'http://127.0.0.1:18091/api/v1/health',
       timeout: 90000,
       reuseExistingServer: false,
       env: {
-        HTTP_ADDR: '127.0.0.1:18081',
+        HTTP_ADDR: '127.0.0.1:18091',
         DATABASE_PATH: `data/e2e-${process.pid}.db`,
         SEED_DEMO: 'true',
         APP_ENV: 'development',
@@ -33,13 +33,15 @@ export default defineConfig({
         MODEL_NAME: '',
         AGENT_CONNECTIONS_FILE: '',
         ADMIN_USER_IDS: 'e2e_admin',
+        AUTH_DELIVERY_MODE: 'local',
+        AUTH_CODE_SECRET: '',
       },
     },
     {
-      command: 'npm run dev -- --port 15173 --strictPort',
-      url: 'http://127.0.0.1:15173',
+      command: 'npm run dev -- --port 15183 --strictPort',
+      url: 'http://127.0.0.1:15183',
       reuseExistingServer: false,
-      env: { API_TARGET: 'http://127.0.0.1:18081' },
+      env: { API_TARGET: 'http://127.0.0.1:18091' },
     },
   ],
 })

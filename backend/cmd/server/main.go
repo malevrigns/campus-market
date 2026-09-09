@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"qingfly/edu-mall/internal/platform"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -48,6 +49,17 @@ func main() {
 	cfg.UploadDir = env("UPLOAD_DIR", "data/uploads")
 	cfg.TrustedProxyCIDRs = os.Getenv("TRUSTED_PROXY_CIDRS")
 	cfg.AdminUserIDs = os.Getenv("ADMIN_USER_IDS")
+	smtpPort := 0
+	if raw := os.Getenv("SMTP_PORT"); raw != "" {
+		var e error
+		smtpPort, e = strconv.Atoi(raw)
+		if e != nil {
+			slog.Error("SMTP_PORT must be an integer")
+			os.Exit(1)
+		}
+	}
+	cfg.AuthCodeSecret = os.Getenv("AUTH_CODE_SECRET")
+	cfg.AuthDelivery = platform.DeliveryConfig{Mode: env("AUTH_DELIVERY_MODE", "disabled"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPPort: smtpPort, SMTPUser: os.Getenv("SMTP_USER"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), SMTPTLSMode: os.Getenv("SMTP_TLS_MODE"), SMSAccessKeyID: os.Getenv("SMS_ACCESS_KEY_ID"), SMSAccessKeySecret: os.Getenv("SMS_ACCESS_KEY_SECRET"), SMSSignName: os.Getenv("SMS_SIGN_NAME"), SMSTemplateCode: os.Getenv("SMS_TEMPLATE_CODE"), SMSRegion: os.Getenv("SMS_REGION")}
 	if e := platform.LoadAgentConnections(os.Getenv("AGENT_CONNECTIONS_FILE"), &cfg); e != nil {
 		slog.Error("agent connections configuration rejected", "error", e)
 		os.Exit(1)

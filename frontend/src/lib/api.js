@@ -4,23 +4,67 @@ export class ApiError extends Error {
     this.status = status
   }
 }
+let authEpoch = 0
 
-export async function api(path, { body, ...options } = {}) {
-  const timeout = AbortSignal.timeout(20000)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: 'same-origin',
-    ...options,
-    signal,
-    headers: body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
-  })
-  const result = await response.json().catch(() => null)
-  if (!response.ok || !result || result.code !== 0) {
-    if (response.status === 401) window.dispatchEvent(new Event('session-expired'))
-    throw new ApiError(result?.msg || '连接暂时不可用，请稍后重试', response.status)
+export async function api(path, { body, signal, suppressAuthEvent = false, headers, ...options } = {}) {
+  const requestEpoch = authEpoch
+  const controller = new AbortController()
+  let timedOut = false
+  const abort = () => controller.abort()
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  const timer = setTimeout(() => {
+    timedOut = true
+    abort()
+  }, 20000)
+  try {
+    const response = await fetch(`/api/v1${path}`, {
+      credentials: 'same-origin',
+      ...options,
+      signal: controller.signal,
+      headers: { ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...headers },
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+    })
+    const result = await response.json().catch(() => null)
+    if (!response.ok || !result || result.code !== 0) {
+      const credentialRequest = [
+        '/auth/login',
+        '/auth/register',
+        '/auth/code-login',
+        '/auth/codes',
+        '/auth/password/reset',
+      ].includes(path)
+      if (
+        response.status === 401 &&
+        requestEpoch === authEpoch &&
+        !suppressAuthEvent &&
+        !credentialRequest &&
+        typeof window !== 'undefined'
+      )
+        window.dispatchEvent(new Event('session-expired'))
+      const failure = new ApiError(result?.msg || '服务暂时不可用，请稍后重试', response.status)
+      failure.retryAfter = Number(response.headers.get('Retry-After')) || 0
+      throw failure
+    }
+    if (['/auth/login', '/auth/register', '/auth/code-login', '/auth/logout'].includes(path)) authEpoch++
+    if (
+      typeof window !== 'undefined' &&
+      ['POST', 'PUT', 'DELETE'].includes(options.method) &&
+      /^\/admin\/(agents|capabilities)(\/|$)/.test(path)
+    )
+      window.dispatchEvent(new Event('agent-catalog-updated'))
+    if (path === '/auth/password/reset' && result.data?.logged_out && typeof window !== 'undefined') {
+      authEpoch++
+      window.dispatchEvent(new Event('session-expired'))
+    }
+    return result.data
+  } catch (error) {
+    if (error instanceof ApiError || signal?.aborted) throw error
+    throw new ApiError(timedOut ? '请求超时，请检查网络后重试' : '无法连接服务器，请检查网络或稍后重试', 0)
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   }
-  return result.data
 }
 
 export async function consumeSSE(body, onEvent) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -21,6 +22,7 @@ func (c *testClient) call(method, path string, body any) (int, map[string]any) {
 	c.t.Helper()
 	b, _ := json.Marshal(body)
 	r := httptest.NewRequest(method, path, bytes.NewReader(b))
+	r.RemoteAddr = "127.0.0.1:12345"
 	r.Header.Set("Content-Type", "application/json")
 	if c.cookie != nil {
 		r.AddCookie(c.cookie)
@@ -36,7 +38,7 @@ func (c *testClient) call(method, path string, body any) (int, map[string]any) {
 		out.Data = map[string]any{"msg": out.Msg}
 	}
 	for _, k := range w.Result().Cookies() {
-		if k.Name == "campus_session" {
+		if strings.HasPrefix(k.Name, "campus_session") || k.Name == "__Host-campus_session" {
 			c.cookie = k
 		}
 	}
@@ -50,7 +52,7 @@ func testApp(t *testing.T) (*Server, string) {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	a, e := NewServer(db, Config{})
+	a, e := NewServer(db, Config{AuthDelivery: DeliveryConfig{Mode: "local"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -59,7 +61,10 @@ func testApp(t *testing.T) (*Server, string) {
 func account(t *testing.T, a *Server, n string) *testClient {
 	t.Helper()
 	c := &testClient{t: t, app: a.Handler()}
-	s, _ := c.call("POST", "/api/v1/auth/register", map[string]any{"name": n, "email": n + "@campus.test", "password": "Testing-strong-123"})
+	proof := testCode(t, c, "email", n+"@campus.test", "register")
+	proof["name"] = n
+	proof["password"] = "Testing-strong-123"
+	s, _ := c.call("POST", "/api/v1/auth/register", proof)
 	if s != 201 {
 		t.Fatalf("register: %d", s)
 	}

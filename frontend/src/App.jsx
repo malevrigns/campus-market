@@ -17,14 +17,15 @@ import Shop from './components/Shop'
 import ProductDetail from './components/ProductDetail'
 import { AuthModal, PublishModal, Profile } from './components/Account'
 import Checkout from './components/Checkout'
+import FloatingAssistant from './components/FloatingAssistant'
+import { ThemeButton, useReducedMotion, useTheme } from './components/Theme'
+import './theme.css'
+import './widget.css'
 const Messages = lazy(() => import('./components/Messages'))
-const Agent = lazy(() => import('./components/Agent'))
 const Orders = lazy(() => import('./components/Orders'))
 const AgentAdmin = lazy(() => import('./components/AgentAdmin'))
 const readPage = () =>
-  ['messages', 'agent', 'agent-admin', 'orders', 'profile', 'favorites', 'selling'].includes(
-    location.hash.slice(1),
-  )
+  ['messages', 'agent-admin', 'orders', 'profile', 'favorites', 'selling'].includes(location.hash.slice(1))
     ? location.hash.slice(1)
     : 'home'
 const NAV = [
@@ -35,31 +36,35 @@ const NAV = [
   { id: 'profile', label: '我的', icon: <UserOutlined /> },
 ]
 export default function App() {
+  const [mode, toggleTheme] = useTheme()
+  const reducedMotion = useReducedMotion()
+  const light = mode === 'light'
   return (
     <ConfigProvider
       locale={zhCN}
       theme={{
-        algorithm: theme.darkAlgorithm,
+        algorithm: light ? theme.defaultAlgorithm : theme.darkAlgorithm,
         token: {
-          colorPrimary: '#d6ef86',
-          colorBgBase: '#11130f',
-          colorBgContainer: '#1b1e18',
-          colorBgElevated: '#1b1e18',
-          colorText: '#f4f5ed',
-          colorTextSecondary: '#a1a797',
-          colorBorder: '#383d32',
+          motion: !reducedMotion,
+          colorPrimary: light ? '#526d27' : '#d6ef86',
+          colorBgBase: light ? '#f8f9f3' : '#11130f',
+          colorBgContainer: light ? '#ffffff' : '#1b1e18',
+          colorBgElevated: light ? '#ffffff' : '#1b1e18',
+          colorText: light ? '#252e1d' : '#f4f5ed',
+          colorTextSecondary: light ? '#606b54' : '#a1a797',
+          colorBorder: light ? '#d3dbc7' : '#383d32',
           borderRadius: 16,
           fontFamily: 'Inter, PingFang SC, Microsoft YaHei, sans-serif',
         },
       }}
     >
       <AntApp>
-        <Shell />
+        <Shell themeMode={mode} onToggleTheme={toggleTheme} />
       </AntApp>
     </ConfigProvider>
   )
 }
-function Shell() {
+function Shell({ themeMode, onToggleTheme }) {
   const { message } = AntApp.useApp()
   const [page, setPage] = useState(readPage),
     [user, setUser] = useState(null),
@@ -74,31 +79,55 @@ function Shell() {
   const [search, setSearch] = useState(''),
     [conversation, setConversation] = useState(null),
     [unread, setUnread] = useState(0)
+  const [assistantOpen, setAssistantOpen] = useState(false),
+    [assistantIntent, setAssistantIntent] = useState(() => location.hash === '#agent')
   const afterAuth = useRef(null),
-    likePending = useRef(new Set())
+    likePending = useRef(new Set()),
+    authRevision = useRef(0),
+    currentPage = useRef(page)
+  currentPage.current = page
   const navigate = useCallback((to) => {
+    if (to === 'agent') {
+      setAssistantIntent(true)
+      return
+    }
     location.hash = to === 'home' ? '' : to
     setPage(to)
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [])
   useEffect(() => {
-    const fn = () => setPage(readPage())
+    const fn = () => {
+      if (location.hash === '#agent') {
+        const previous = currentPage.current === 'home' ? '' : `#${currentPage.current}`
+        history.replaceState(null, '', `${location.pathname}${location.search}${previous}`)
+        setAssistantIntent(true)
+      } else {
+        setPage(readPage())
+        if (readPage() === 'agent-admin') setAssistantOpen(false)
+      }
+    }
+    if (location.hash === '#agent') fn()
     window.addEventListener('hashchange', fn)
     return () => window.removeEventListener('hashchange', fn)
   }, [])
   useEffect(() => {
     const ac = new AbortController()
+    const revisionAtStart = authRevision.current
     api('/config', { signal: ac.signal })
       .then(setConfig)
       .catch(() => {})
-    api('/auth/me', { signal: ac.signal })
-      .then(setUser)
+    api('/auth/me', { signal: ac.signal, suppressAuthEvent: true })
+      .then((u) => {
+        if (!ac.signal.aborted && revisionAtStart === authRevision.current) setUser(u)
+      })
       .catch(() => {})
       .finally(() => {
         if (!ac.signal.aborted) setAuthReady(true)
       })
     const expired = () => {
+      authRevision.current += 1
       setUser(null)
+      setAssistantOpen(false)
       setLiked(new Set())
       setUnread(0)
     }
@@ -108,6 +137,15 @@ function Shell() {
       window.removeEventListener('session-expired', expired)
     }
   }, [])
+  useEffect(() => {
+    if (!assistantIntent || !authReady) return
+    setAssistantIntent(false)
+    if (user) setAssistantOpen(true)
+    else {
+      afterAuth.current = () => setAssistantOpen(true)
+      setAuthOpen(true)
+    }
+  }, [assistantIntent, authReady, user])
   useEffect(() => {
     if (!user) return
     const ac = new AbortController()
@@ -171,7 +209,7 @@ function Shell() {
       }
     })
   const publish = () => requireUser(() => setPublishOpen(true))
-  const isWorkspace = page === 'messages' || page === 'agent'
+  const isWorkspace = page === 'messages'
   return (
     <div className={`app-shell ${isWorkspace ? 'workspace-shell' : ''}`}>
       <a className="skip-link" href="#main">
@@ -200,6 +238,7 @@ function Shell() {
           ))}
         </nav>
         <div className="header-actions">
+          <ThemeButton mode={themeMode} onToggle={onToggleTheme} />
           <button
             className="icon-button header-save"
             aria-label="我的收藏"
@@ -270,7 +309,6 @@ function Shell() {
             {page === 'messages' && (
               <Messages user={user} selected={conversation} onSelect={setConversation} onUnread={setUnread} />
             )}
-            {page === 'agent' && <Agent user={user} config={config} />}
             {page === 'agent-admin' &&
               (user.is_admin ? (
                 <AgentAdmin />
@@ -292,12 +330,15 @@ function Shell() {
             {page === 'profile' && (
               <Profile
                 user={user}
+                onUserUpdate={setUser}
                 onNavigate={navigate}
                 onPublish={publish}
                 onLogout={async () => {
                   try {
                     await api('/auth/logout', { method: 'POST', body: {} })
+                    authRevision.current += 1
                     setUser(null)
+                    setAssistantOpen(false)
                     setLiked(new Set())
                     setUnread(0)
                     navigate('home')
@@ -347,6 +388,13 @@ function Shell() {
           </button>
         ))}
       </nav>
+      <FloatingAssistant
+        user={user}
+        avoidComposer={page === 'messages'}
+        open={assistantOpen && !!user}
+        onOpen={() => setAssistantIntent(true)}
+        onClose={() => setAssistantOpen(false)}
+      />
       <AuthModal
         open={authOpen}
         onClose={() => {
@@ -354,7 +402,9 @@ function Shell() {
           afterAuth.current = null
         }}
         onSuccess={(u) => {
+          authRevision.current += 1
           setUser(u)
+          setAuthReady(true)
           setAuthOpen(false)
           const action = afterAuth.current
           afterAuth.current = null

@@ -10,99 +10,12 @@ import {
   ThunderboltOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
+import IdentityModal from './AuthModal'
 import { api, CAMPUSES, CATEGORIES, CONDITIONS, toCents } from '../lib/api'
 import { Avatar, Button, ErrorState, PageHeading, ProductImage } from './ui'
 
-export function AuthModal({ open, onClose, onSuccess }) {
-  const [register, setRegister] = useState(false),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(null)
-  useEffect(() => {
-    if (open) setError(null)
-  }, [open, register])
-  const submit = async (e) => {
-    e.preventDefault()
-    if (busy) return
-    const values = Object.fromEntries(new FormData(e.currentTarget))
-    setBusy(true)
-    setError(null)
-    try {
-      onSuccess(await api(`/auth/${register ? 'register' : 'login'}`, { method: 'POST', body: values }))
-    } catch (e) {
-      setError(e)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Modal
-      open={open}
-      onCancel={busy ? undefined : onClose}
-      footer={null}
-      width={440}
-      destroyOnClose
-      title={null}
-      className="auth-modal"
-    >
-      <div className="auth-art">
-        ✳<span>HELLO, CAMPUS.</span>
-      </div>
-      <h2>{register ? '下一程，一起出发。' : '好久不见，同学。'}</h2>
-      <p className="modal-subtitle">
-        {register ? '加入校园集市，让每一件好物继续发光。' : '登录校园集市，继续你的发现之旅。'}
-      </p>
-      <form className="form-stack" onSubmit={submit}>
-        {register && (
-          <label>
-            昵称
-            <input
-              name="name"
-              autoComplete="nickname"
-              minLength={2}
-              maxLength={24}
-              required
-              placeholder="同学们怎么称呼你"
-            />
-          </label>
-        )}
-        <label>
-          邮箱
-          <input
-            name="email"
-            type="email"
-            autoComplete="email"
-            maxLength={254}
-            required
-            placeholder="you@example.com"
-          />
-        </label>
-        <label>
-          密码
-          <input
-            name="password"
-            type="password"
-            autoComplete={register ? 'new-password' : 'current-password'}
-            minLength={register ? 10 : undefined}
-            maxLength={72}
-            required
-            placeholder={register ? '至少 10 位，建议包含字母和数字' : '输入你的密码'}
-          />
-        </label>
-        {error && <ErrorState error={error} />}
-        <Button type="submit" busy={busy}>
-          {register ? '创建账号' : '登录'}
-          <ArrowRightOutlined />
-        </Button>
-      </form>
-      <p className="auth-switch">
-        {register ? '已经有账号？' : '第一次来到这里？'}
-        <button onClick={() => setRegister((v) => !v)} disabled={busy}>
-          {register ? '去登录' : '注册账号'}
-        </button>
-      </p>
-    </Modal>
-  )
-}
+export { default as AuthModal } from './AuthModal'
+
 export function PublishModal({ open, onClose, onSuccess }) {
   const [busy, setBusy] = useState(false),
     [uploading, setUploading] = useState(false),
@@ -257,8 +170,9 @@ export function PublishModal({ open, onClose, onSuccess }) {
     </Modal>
   )
 }
-export function Profile({ user, onNavigate, onPublish, onLogout }) {
+export function Profile({ user, onNavigate, onPublish, onLogout, onUserUpdate }) {
   const [busy, setBusy] = useState(false)
+  const [contact, setContact] = useState(null)
   const links = [
     { name: '我的订单', sub: '每一件好物的新旅程', page: 'orders', icon: <ShoppingOutlined /> },
     { name: '我的收藏', sub: '把喜欢留给下一次', page: 'favorites', icon: <HeartOutlined /> },
@@ -283,13 +197,48 @@ export function Profile({ user, onNavigate, onPublish, onLogout }) {
         <Avatar name={user.name} size="large" />
         <div>
           <h2>{user.name}</h2>
-          <p>{user.email}</p>
+          <p>{user.email || user.phone}</p>
           <span className="member-badge">校园集市成员</span>
         </div>
         <Button onClick={onPublish}>
           <PlusOutlined />
           发布闲置
         </Button>
+      </section>
+      <section className="account-security">
+        <h3>账号安全</h3>
+        <div>
+          <div>
+            <strong>邮箱</strong>
+            <small>{user.email || '尚未绑定邮箱'}</small>
+          </div>
+          {user.email_verified ? (
+            <span className="verified">已验证</span>
+          ) : (
+            <Button
+              variant="secondary"
+              onClick={() => setContact({ channel: 'email', target: user.email || '' })}
+            >
+              {user.email ? '验证邮箱' : '绑定邮箱'}
+            </Button>
+          )}
+        </div>
+        <div>
+          <div>
+            <strong>手机号</strong>
+            <small>{user.phone || '尚未绑定手机号'}</small>
+          </div>
+          {user.phone_verified ? (
+            <span className="verified">已验证</span>
+          ) : (
+            <Button
+              variant="secondary"
+              onClick={() => setContact({ channel: 'sms', target: user.phone || '' })}
+            >
+              {user.phone ? '验证手机' : '绑定手机'}
+            </Button>
+          )}
+        </div>
       </section>
       <div className="profile-links">
         {links.map((l) => (
@@ -315,6 +264,19 @@ export function Profile({ user, onNavigate, onPublish, onLogout }) {
         <LogoutOutlined />
         退出登录
       </Button>
+      {contact && (
+        <IdentityModal
+          open
+          initialMode="bind"
+          initialAccount={contact.target}
+          bindChannel={contact.channel}
+          onClose={() => setContact(null)}
+          onBound={(fresh) => {
+            onUserUpdate?.(fresh)
+            setContact(null)
+          }}
+        />
+      )}
     </>
   )
 }

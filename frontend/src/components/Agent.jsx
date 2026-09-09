@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ArrowUpOutlined,
+  ArrowLeftOutlined,
   CheckOutlined,
   HistoryOutlined,
   PlusOutlined,
@@ -9,7 +10,7 @@ import {
 } from '@ant-design/icons'
 import { api, newKey, runAgent } from '../lib/api'
 import { Button, ErrorState, Loading } from './ui'
-export default function Agent({ user }) {
+export default function Agent({ user, compact = false, visible = true }) {
   const [agents, setAgents] = useState([]),
     [selectedAgent, setSelectedAgent] = useState('')
   const active = agents.find((a) => a.id === selectedAgent)
@@ -26,13 +27,16 @@ export default function Agent({ user }) {
   const abort = useRef(null),
     historyAbort = useRef(null),
     list = useRef(null),
-    mounted = useRef(true)
+    mounted = useRef(true),
+    catalogRequest = useRef(0)
   const loadThreads = (signal) => api('/agent/threads', { signal }).then((d) => setThreads(d.items))
-  const loadAgents = (signal) =>
-    api('/agents', { signal }).then((d) => {
+  const loadAgents = (signal) => {
+    const request = ++catalogRequest.current
+    return api('/agents', { signal }).then((d) => {
+      if (signal?.aborted || request !== catalogRequest.current) return
       setAgents(d.items)
-      setSelectedAgent((current) => current || d.items[0]?.id || '')
     })
+  }
   useEffect(() => {
     mounted.current = true
     const ac = new AbortController()
@@ -43,9 +47,9 @@ export default function Agent({ user }) {
       loadAgents(ac.signal).catch((e) => {
         if (!ac.signal.aborted) setError(e)
       })
-    refresh()
     const timer = setInterval(refresh, 15000)
     window.addEventListener('focus', refresh)
+    window.addEventListener('agent-catalog-updated', refresh)
     return () => {
       mounted.current = false
       ac.abort()
@@ -53,8 +57,25 @@ export default function Agent({ user }) {
       historyAbort.current?.abort()
       clearInterval(timer)
       window.removeEventListener('focus', refresh)
+      window.removeEventListener('agent-catalog-updated', refresh)
     }
   }, [])
+  useEffect(() => {
+    if (!visible) return
+    const ac = new AbortController()
+    loadAgents(ac.signal).catch((e) => {
+      if (!ac.signal.aborted) setError(e)
+    })
+    return () => ac.abort()
+  }, [visible])
+  useEffect(() => {
+    // Historical threads keep their original assistant, even after it is unpublished.
+    if (thread || busy || loading) return
+    setSelectedAgent((current) => {
+      if (agents.some((agent) => agent.id === current)) return current
+      return agents.find((agent) => agent.available)?.id || agents[0]?.id || ''
+    })
+  }, [agents, thread, busy, loading])
   useEffect(() => {
     list.current?.scrollTo({ top: list.current.scrollHeight, behavior: 'smooth' })
   }, [runs])
@@ -130,7 +151,7 @@ export default function Agent({ user }) {
     }
   }
   return (
-    <div className={`agent-workspace ${historyOpen ? 'show-history' : ''}`}>
+    <div className={`agent-workspace ${compact ? 'agent-compact' : ''} ${historyOpen ? 'show-history' : ''}`}>
       <aside className="agent-sidebar">
         <div className="workspace-title">
           <div>
@@ -139,6 +160,11 @@ export default function Agent({ user }) {
               AI 助手<span className="lime">✳</span>
             </h1>
           </div>
+          {compact && (
+            <button className="icon-button" aria-label="返回聊天" onClick={() => setHistoryOpen(false)}>
+              <ArrowLeftOutlined />
+            </button>
+          )}
         </div>
         <Button
           variant="secondary"
@@ -215,7 +241,12 @@ export default function Agent({ user }) {
             </select>
             <span className="tiny-label">{active ? `v${active.version}` : 'AI'}</span>
           </div>
-          <button className="icon-button" aria-label="查看对话历史" onClick={() => setHistoryOpen((v) => !v)}>
+          <button
+            className="icon-button"
+            aria-label="查看对话历史"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen((v) => !v)}
+          >
             <HistoryOutlined />
           </button>
         </header>
