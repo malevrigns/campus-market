@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== motionsites.ai 真实设计系统 (shadcn/ui token) ===== */
+:root {
+  --ms-bg: #121212;
+  --ms-card: #292929;
+  --ms-fg: #f5f5f5;
+  --ms-muted: #ababab;
+  --ms-primary: #1a40ff;      /* 唯一强调色：电光蓝 */
+  --ms-border: #303030;
+  --ms-radius: 16px;          /* 统一圆角 1rem */
+}
+
+html { scroll-behavior: smooth; }
+body {
+  background: var(--ms-bg);
+  color: var(--ms-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection { background: rgba(26, 64, 255, .3); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #303030; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #444; }
+
+/* 等宽字体（技术感标签）*/
+.font-mono, code, kbd { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+@layer components {
+  /* 玻璃卡片 —— motionsites 风格：干净深灰 + 细边框，无霓虹发光 */
+  .glass {
+    background: var(--ms-card);
+    border: 1px solid var(--ms-border);
+    border-radius: var(--ms-radius);
+  }
+  .glass-hover { transition: all .3s ease-out; }
+  .glass-hover:hover {
+    border-color: rgba(26, 64, 255, .5);
+    transform: translateY(-4px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .3);
+  }
+
+  /* 主按钮 —— 电光蓝实底，克制 */
+  .btn-primary {
+    background: var(--ms-primary);
+    color: #fff;
+    border-radius: var(--ms-radius);
+    transition: all .3s ease-out;
+    font-weight: 600;
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+  }
+  .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* 次按钮 —— 描边 */
+  .btn-ghost {
+    background: transparent;
+    color: var(--ms-fg);
+    border: 1px solid var(--ms-border);
+    border-radius: var(--ms-radius);
+    transition: all .3s ease-out;
+  }
+  .btn-ghost:hover { border-color: var(--ms-primary); color: var(--ms-primary); }
+
+  /* 文字渐变 —— 只保留极克制的白→灰（不彩虹）*/
+  .text-gradient {
+    background: linear-gradient(180deg, #ffffff 0%, #c9c9c9 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* 电光蓝点缀文字 */
+  .text-accent { color: var(--ms-primary); }
+
+  /* pill 胶囊筛选 */
+  .pill {
+    border-radius: 9999px;
+    padding: .4rem 1rem;
+    font-size: .8rem;
+    border: 1px solid var(--ms-border);
+    color: var(--ms-muted);
+    transition: all .3s ease-out;
+    white-space: nowrap;
+  }
+  .pill:hover { color: var(--ms-fg); border-color: #4a4a4a; }
+  .pill-active {
+    background: var(--ms-primary);
+    color: #fff !important;
+    border-color: var(--ms-primary);
+  }
+
+  /* shimmer 骨架屏（motionsites keyframes）*/
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #1e1e1e 25%, #2a2a2a 50%, #1e1e1e 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite linear;
+    border-radius: 8px;
+  }
+
+  /* parallax fade up（入场）*/
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .reveal { opacity: 0; }
+  .reveal.is-visible { animation: fade-up .7s cubic-bezier(.2,.7,.3,1) forwards; }
+
+  /* LIVE 呼吸点 */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+  .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
+
+  /* marquee（跑马灯）*/
+  @keyframes marquee-x {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  .marquee-track { animation: marquee-x 30s linear infinite; }
+}
+
+.chat-scroll::-webkit-scrollbar { width: 5px; }
+.chat-scroll::-webkit-scrollbar-thumb { background: #303030; }
+.line-clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
