@@ -1,0 +1,7 @@
+
+> campus-market-neon@2.0.0 preview
+> vite preview --port 4174 --strictPort
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://10.31.235.32:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.22.208.1:[1m4174[22m/[39m
