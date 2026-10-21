@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -150,7 +151,7 @@ func (s *Server) startPayment(w http.ResponseWriter, r *http.Request, u *User) e
 		return e
 	}
 	defer tx.Rollback()
-	o, e := scanOrder(tx.QueryRow(orderSelect+" WHERE id=? AND buyer_id=?", r.PathValue("id"), u.ID))
+	o, e := scanOrder(tx.QueryRow(orderSelect+" WHERE id=? AND buyer_id=? FOR UPDATE", r.PathValue("id"), u.ID))
 	if e != nil {
 		return e
 	}
@@ -163,7 +164,7 @@ func (s *Server) startPayment(w http.ResponseWriter, r *http.Request, u *User) e
 	if e != nil {
 		return e
 	}
-	if _, e = tx.Exec("INSERT INTO payments(order_id,checkout_url,created_at) VALUES(?,?,?) ON CONFLICT(order_id) DO UPDATE SET checkout_url=excluded.checkout_url", o.ID, checkout, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO payments (order_id,checkout_url,created_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE checkout_url=VALUES(checkout_url)", o.ID, checkout, now()); e != nil {
 		return e
 	}
 	if e = tx.Commit(); e != nil {
@@ -232,7 +233,8 @@ func (s *Server) applyPaymentEvidence(v url.Values) error {
 		return e
 	}
 	defer tx.Rollback()
-	o, e := scanOrder(tx.QueryRow(orderSelect+" WHERE id=?", v.Get("out_trade_no")))
+	// 支付回调与用户取消、超时关单可能并发：锁住订单行后再判断状态。
+	o, e := scanOrder(tx.QueryRow(orderSelect+" WHERE id=? FOR UPDATE", v.Get("out_trade_no")))
 	if e != nil {
 		return e
 	}
@@ -273,19 +275,21 @@ func (s *Server) applyPaymentEvidence(v url.Values) error {
 	if _, e = tx.Exec("UPDATE payments SET trade_no=? WHERE order_id=?", v.Get("trade_no"), o.ID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec("INSERT INTO payment_callbacks VALUES(?,?,?,?,?,?)", v.Get("notify_id"), o.ID, v.Get("trade_no"), status, amount, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO payment_callbacks (notify_id,order_id,trade_no,status,amount_ct,created_at) VALUES(?,?,?,?,?,?)", v.Get("notify_id"), o.ID, v.Get("trade_no"), status, amount, now()); e != nil {
 		return e
 	}
 	if next != o.Status {
 		if _, e = tx.Exec("UPDATE orders SET status=?,updated_at=? WHERE id=?", next, now(), o.ID); e != nil {
 			return e
 		}
-		productState := "sold"
 		if next == "cancelled" {
-			productState = "available"
-		}
-		if _, e = tx.Exec("UPDATE products SET status=? WHERE id=?", productState, o.ProductID); e != nil {
-			return e
+			if e = releaseInventory(tx, o); e != nil {
+				return e
+			}
+		} else if o.ProductID != "" {
+			if _, e = tx.Exec("UPDATE products SET status='sold',updated_at=? WHERE id=?", now(), o.ProductID); e != nil {
+				return e
+			}
 		}
 		if e = addEvent(tx, o.ID, next, "alipay"); e != nil {
 			return e
@@ -294,6 +298,16 @@ func (s *Server) applyPaymentEvidence(v url.Values) error {
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	s.live.Notify([]string{o.BuyerID, o.SellerID}, map[string]any{"type": "order", "order_id": o.ID})
+	ctx := context.Background()
+	switch {
+	case next == o.Status:
+	case next == "cancelled":
+		s.afterRelease(ctx, o)
+		return nil
+	default:
+		_ = s.timeouts.Remove(ctx, o.ID)
+		s.productsChanged(ctx, o.ProductID)
+	}
+	s.notifyOrder(o)
 	return nil
 }

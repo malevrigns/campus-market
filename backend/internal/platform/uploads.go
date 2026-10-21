@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 )
 
 var localImage = regexp.MustCompile(`^/media/img_[a-f0-9]{32}\.jpg$`)
@@ -21,7 +22,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, u *User) error {
 	default:
 		return fail(429, "图片处理中，请稍后再上传")
 	}
-	if !s.limits.allow("upload:"+u.ID, 15) {
+	if !s.allow(r, "upload:"+u.ID, 15, time.Minute) {
 		return fail(429, "上传太频繁，请稍后重试")
 	}
 	if e := r.ParseMultipartForm(6 << 20); e != nil {

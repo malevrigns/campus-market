@@ -7,14 +7,27 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"qingfly/edu-mall/internal/infra/mysqlx"
+	"qingfly/edu-mall/internal/infra/redisx"
+	"qingfly/edu-mall/internal/pkg/cache"
+	"qingfly/edu-mall/internal/pkg/delayqueue"
+	"qingfly/edu-mall/internal/pkg/lock"
+	"qingfly/edu-mall/internal/pkg/ratelimit"
+	"qingfly/edu-mall/internal/pkg/snowflake"
+	"qingfly/edu-mall/internal/seckill"
 )
 
 type Config struct {
@@ -29,19 +42,37 @@ type Config struct {
 	Production                                                                    bool
 	AlipayAppID, AlipaySellerID, AlipayPrivateKey, AlipayPublicKey, AlipayGateway string
 	ModelURL, ModelKey, ModelName                                                 string
+	// RedisPrefix 是所有 Redis key 的前缀，多个环境共用一个 Redis 时用来隔离。
+	RedisPrefix string
+	// Instance 标识当前进程（Stream 消费者名、Pub/Sub 来源），默认 hostname-pid。
+	Instance string
+	// NodeID 是雪花算法节点号；小于 0 表示通过 Redis 租约自动分配。
+	NodeID int
+	// PaymentWindow 是订单待支付时长，默认 15 分钟。
+	PaymentWindow time.Duration
 }
+
 type Server struct {
 	verification *verificationState
 	uploadSlots  chan struct{}
 	trusted      []netip.Prefix
 	db           *sql.DB
+	rdb          redis.UniversalClient
+	keys         redisx.Keys
 	cfg          Config
 	mux          *http.ServeMux
 	pay          *Alipay
 	live         *LiveHub
-	limits       *limiter
+	limiter      *ratelimit.Limiter
+	locks        *lock.Client
+	cache        *cache.Cache
+	timeouts     *delayqueue.Queue
+	flash        *seckill.Engine
+	ids          *snowflake.Node
+	lease        *snowflake.Lease
 	client       *http.Client
 }
+
 type apiError struct {
 	status  int
 	message string
@@ -57,9 +88,31 @@ func id(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 func now() int64 { return time.Now().UnixMilli() }
-func NewServer(db *sql.DB, cfg Config) (*Server, error) {
+
+func defaultInstance() string {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "campus"
+	}
+	return fmt.Sprintf("%s-%d-%s", host, os.Getpid(), id("")[:6])
+}
+
+// NewServer 组装应用。db 与 rdb 由调用方创建并负责关闭；后台任务需要另外调用 Run 启动。
+func NewServer(db *sql.DB, rdb redis.UniversalClient, cfg Config) (*Server, error) {
+	if db == nil || rdb == nil {
+		return nil, errors.New("database and redis are required")
+	}
 	if cfg.UploadDir == "" {
 		cfg.UploadDir = "data/uploads"
+	}
+	if cfg.RedisPrefix == "" {
+		cfg.RedisPrefix = "campus"
+	}
+	if cfg.Instance == "" {
+		cfg.Instance = defaultInstance()
+	}
+	if cfg.PaymentWindow <= 0 {
+		cfg.PaymentWindow = 15 * time.Minute
 	}
 	if cfg.ModelURL != "" {
 		u, e := url.Parse(cfg.ModelURL)
@@ -77,8 +130,27 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	if e != nil {
 		return nil, e
 	}
-	s := &Server{db: db, cfg: cfg, mux: http.NewServeMux(), pay: pay, live: NewLiveHub(), limits: &limiter{entries: map[string]window{}}, client: &http.Client{Timeout: 90 * time.Second}}
+	prefix := cfg.RedisPrefix
+	s := &Server{db: db, rdb: rdb, keys: redisx.Keys(prefix), cfg: cfg, mux: http.NewServeMux(), pay: pay, client: &http.Client{Timeout: 90 * time.Second}}
 	s.uploadSlots = make(chan struct{}, 2)
+	s.locks = lock.New(rdb, prefix+":lock")
+	s.limiter = ratelimit.New(rdb, prefix+":rl")
+	s.cache = cache.New(rdb, cache.Options{Prefix: prefix + ":cache", LocalTTL: 3 * time.Second, NullTTL: 30 * time.Second})
+	s.timeouts = delayqueue.New(rdb, prefix, "order-timeout", delayqueue.Options{Visibility: 30 * time.Second, Workers: 4})
+	s.live = NewLiveHub(rdb, prefix+":live", cfg.Instance)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if cfg.NodeID >= 0 {
+		if s.ids, e = snowflake.NewNode(int64(cfg.NodeID)); e != nil {
+			return nil, e
+		}
+	} else {
+		if s.lease, e = snowflake.AcquireLease(ctx, s.locks, 30*time.Second); e != nil {
+			return nil, e
+		}
+		s.ids = s.lease.Node
+	}
+	s.flash = seckill.New(db, rdb, seckill.Config{Prefix: prefix, Consumer: cfg.Instance, PaymentWindow: cfg.PaymentWindow}, s.newOrderID, seckill.Hooks{OrderCreated: s.onFlashOrderCreated, OrderFailed: s.onFlashOrderFailed})
 	if e = s.initVerification(); e != nil {
 		return nil, e
 	}
@@ -96,7 +168,7 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 		}
 		s.trusted = append(s.trusted, p)
 	}
-	if _, e = db.Exec("UPDATE agent_runs SET status='failed',error='服务重启，请重新发送' WHERE status='running'"); e != nil {
+	if _, e = db.Exec("UPDATE agent_runs SET status='failed',error='服务重启，请重新发送' WHERE status='running' AND created_at<?", now()-120000); e != nil {
 		return nil, e
 	}
 	s.route("GET /api/v1/health", false, s.health)
@@ -111,6 +183,7 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	s.route("GET /api/v1/auth/me", true, s.me)
 	s.route("POST /api/v1/auth/logout", true, s.logout)
 	s.route("GET /api/v1/products", false, s.products)
+	s.route("GET /api/v1/products/hot", false, s.hotProducts)
 	s.route("GET /api/v1/products/{id}", false, s.product)
 	s.route("POST /api/v1/products", true, s.publish)
 	s.route("POST /api/v1/uploads", true, s.upload)
@@ -128,6 +201,13 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	s.route("POST /api/v1/orders/{id}/refund", true, s.refund)
 	s.route("POST /api/v1/orders/{id}/pay", true, s.startPayment)
 	s.mux.HandleFunc("POST /api/v1/payments/alipay/notify", s.paymentNotify)
+	s.route("GET /api/v1/flash-sales", false, s.flashSales)
+	s.route("GET /api/v1/flash-sales/{id}", false, s.flashSale)
+	s.route("POST /api/v1/flash-sales/{id}/attempts", true, s.flashAttempt)
+	s.route("GET /api/v1/flash-sales/{id}/attempts/me", true, s.flashResult)
+	s.admin("POST /api/v1/admin/flash-sales", s.createFlashSale)
+	s.admin("POST /api/v1/admin/flash-sales/{id}/cancel", s.cancelFlashSale)
+	s.admin("GET /api/v1/admin/runtime", s.runtimeStats)
 	s.route("POST /api/v1/conversations", true, s.createConversation)
 	s.route("GET /api/v1/conversations", true, s.conversations)
 	s.route("GET /api/v1/conversations/{id}/messages", true, s.messages)
@@ -138,6 +218,22 @@ func NewServer(db *sql.DB, cfg Config) (*Server, error) {
 	s.route("POST /api/v1/agent/runs", true, s.agentRun)
 	s.mux.HandleFunc("GET /api/v1/ws", s.websocket)
 	return s, nil
+}
+
+// Close 释放进程级资源（雪花节点租约）。
+func (s *Server) Close(ctx context.Context) {
+	s.cache.Close()
+	if s.lease != nil {
+		s.lease.Release(ctx)
+	}
+}
+
+func (s *Server) newOrderID() (string, error) {
+	n, e := s.ids.Next()
+	if e != nil {
+		return "", e
+	}
+	return "CM" + strconv.FormatInt(n, 10), nil
 }
 
 type endpoint func(http.ResponseWriter, *http.Request, *User) error
@@ -158,58 +254,21 @@ func (s *Server) route(pattern string, authenticated bool, fn endpoint) {
 		}
 	})
 }
-func (s *Server) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Request-ID", id("req_"))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Cache-Control", "no-store")
-		defer func() {
-			if e := recover(); e != nil {
-				slog.Error("request panic", "path", r.URL.Path, "error", e)
-				writeError(w, fail(500, "服务暂时不可用"))
-			}
-		}()
-		if r.Method != "GET" && r.Method != "HEAD" && r.URL.Path != "/api/v1/payments/alipay/notify" {
-			origin := r.Header.Get("Origin")
-			expected := s.cfg.PublicOrigin
-			if expected == "" {
-				scheme := "http"
-				if r.TLS != nil {
-					scheme = "https"
-				}
-				expected = scheme + "://" + r.Host
-			}
-			if (origin != "" && origin != expected) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-				writeError(w, fail(403, "请求来源不被允许"))
-				return
-			}
+
+func (s *Server) admin(pattern string, fn endpoint) {
+	s.route(pattern, true, func(w http.ResponseWriter, r *http.Request, u *User) error {
+		if !s.isAgentAdmin(u.ID) {
+			return fail(403, "仅管理员可执行该操作")
 		}
-		if r.URL.Path != "/api/v1/health" {
-			key := s.clientIP(r)
-			max := 600
-			if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") && r.Method == "POST" && r.URL.Path != "/api/v1/auth/codes" && r.URL.Path != "/api/v1/auth/dev-inbox" {
-				key += "auth"
-				max = 30
-			}
-			if r.URL.Path == "/api/v1/payments/alipay/notify" {
-				key += ":payment-callback"
-				max = 1200
-			}
-			if !s.limits.allow(key, max) {
-				w.Header().Set("Retry-After", "60")
-				writeError(w, fail(429, "请求过于频繁，请稍后重试"))
-				return
-			}
-		}
-		maxBody := int64(1 << 20)
-		if r.URL.Path == "/api/v1/uploads" {
-			maxBody = 6 << 20
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		s.mux.ServeHTTP(w, r)
+		return fn(w, r, u)
 	})
 }
+
+// allow 是业务接口级限流（滑动窗口）。
+func (s *Server) allow(r *http.Request, key string, limit int, window time.Duration) bool {
+	return s.limiter.Window(r.Context(), key, limit, window).Allowed
+}
+
 func decode(r *http.Request, v any) error {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
@@ -229,9 +288,17 @@ func result(w http.ResponseWriter, status int, data any) error {
 func writeError(w http.ResponseWriter, e error) {
 	var a *apiError
 	if !errors.As(e, &a) {
-		if errors.Is(e, sql.ErrNoRows) {
+		switch {
+		case errors.Is(e, sql.ErrNoRows):
 			a = &apiError{404, "内容不存在或无权访问"}
-		} else {
+		case mysqlx.IsDuplicate(e):
+			// 并发请求撞上唯一约束（幂等键、一人一单等），由数据库约束兜底后返回冲突。
+			a = &apiError{409, "请求冲突，请刷新后重试"}
+		case mysqlx.IsRetryable(e):
+			a = &apiError{503, "系统繁忙，请稍后重试"}
+		case errors.Is(e, context.DeadlineExceeded):
+			a = &apiError{504, "处理超时，请稍后重试"}
+		default:
 			slog.Error("request failed", "error", e)
 			a = &apiError{500, "服务暂时不可用，请稍后重试"}
 		}
@@ -246,40 +313,28 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request, _ *User) error {
 	if e := s.db.PingContext(ctx); e != nil {
 		return fail(503, "数据库不可用")
 	}
+	if e := s.rdb.Ping(ctx).Err(); e != nil {
+		return fail(503, "缓存不可用")
+	}
 	return result(w, 200, map[string]any{"status": "ok"})
 }
 func (s *Server) config(w http.ResponseWriter, r *http.Request, _ *User) error {
 	return result(w, 200, map[string]any{"payments": map[string]bool{"alipay": s.pay != nil}, "agent_available": s.cfg.ModelKey != "" && s.cfg.ModelName != "" && s.cfg.ModelURL != "", "categories": categories, "campuses": campuses, "auth": map[string]any{"email_code": s.verification.email, "sms_code": s.verification.sms, "local_inbox": s.verification.local, "password_min_length": 8}})
 }
 
-type window struct {
-	start time.Time
-	n     int
-}
-type limiter struct {
-	mu      sync.Mutex
-	entries map[string]window
-}
-
-func (l *limiter) allow(key string, max int) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	t := time.Now()
-	if len(l.entries) > 10000 {
-		for k, v := range l.entries {
-			if t.Sub(v.start) > time.Minute {
-				delete(l.entries, k)
-			}
-		}
-		if len(l.entries) > 10000 {
-			return false
-		}
+// runtimeStats 给管理员查看缓存命中、延迟队列积压、抢购消息流状态。
+func (s *Server) runtimeStats(w http.ResponseWriter, r *http.Request, _ *User) error {
+	ready, inflight, dead, e := s.timeouts.Stats(r.Context())
+	if e != nil {
+		return e
 	}
-	v := l.entries[key]
-	if t.Sub(v.start) > time.Minute {
-		v = window{start: t}
-	}
-	v.n++
-	l.entries[key] = v
-	return v.n <= max
+	db := s.db.Stats()
+	return result(w, 200, map[string]any{
+		"instance":      s.cfg.Instance,
+		"snowflake":     s.ids.ID(),
+		"cache":         s.cache.Stats(),
+		"order_timeout": map[string]int64{"ready": ready, "inflight": inflight, "dead": dead},
+		"flash":         s.flash.StreamStats(r.Context()),
+		"db_pool":       map[string]any{"open": db.OpenConnections, "in_use": db.InUse, "idle": db.Idle, "wait_count": db.WaitCount, "wait_ms": db.WaitDuration.Milliseconds()},
+	})
 }

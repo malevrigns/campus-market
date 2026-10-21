@@ -75,7 +75,7 @@ func (s *Server) createCapability(w http.ResponseWriter, r *http.Request, u *Use
 		return e
 	}
 	defer tx.Rollback()
-	if _, e = tx.Exec("INSERT INTO agent_capabilities VALUES(?,?,?,?,?,?,1,?)", cid, v.Kind, strings.TrimSpace(v.Name), v.Description, string(raw), v.Enabled, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO agent_capabilities (id,kind,name,description,config,enabled,revision,updated_at) VALUES(?,?,?,?,?,?,1,?)", cid, v.Kind, strings.TrimSpace(v.Name), v.Description, string(raw), v.Enabled, now()); e != nil {
 		return e
 	}
 	if e = catalogAudit(tx, u.ID, "capability.create", cid, 1); e != nil {
@@ -147,7 +147,7 @@ func (s *Server) deleteCapability(w http.ResponseWriter, r *http.Request, u *Use
 	defer tx.Rollback()
 	cid := r.PathValue("id")
 	var count int
-	e = tx.QueryRow(`SELECT COUNT(*) FROM agent_definitions d WHERE d.archived=0 AND (json_extract(d.draft,'$.model_capability_id')=? OR EXISTS(SELECT 1 FROM json_each(d.draft,'$.tool_capability_ids') WHERE value=?) OR EXISTS(SELECT 1 FROM agent_versions v WHERE v.agent_id=d.id AND v.version=d.published_version AND (json_extract(v.snapshot,'$.model.id')=? OR EXISTS(SELECT 1 FROM json_each(v.snapshot,'$.tools') WHERE json_extract(value,'$.id')=?))))`, cid, cid, cid, cid).Scan(&count)
+	e = tx.QueryRow(`SELECT COUNT(*) FROM agent_definitions d WHERE d.archived=0 AND (JSON_UNQUOTE(JSON_EXTRACT(d.draft,'$.model_capability_id'))=? OR JSON_CONTAINS(JSON_EXTRACT(d.draft,'$.tool_capability_ids'),JSON_QUOTE(?)) OR EXISTS(SELECT 1 FROM agent_versions v WHERE v.agent_id=d.id AND v.version=d.published_version AND (JSON_UNQUOTE(JSON_EXTRACT(v.snapshot,'$.model.id'))=? OR JSON_CONTAINS(JSON_EXTRACT(v.snapshot,'$.tools[*].id'),JSON_QUOTE(?)))))`, cid, cid, cid, cid).Scan(&count)
 	if e != nil {
 		return e
 	}
@@ -292,7 +292,7 @@ func (s *Server) publishAgent(w http.ResponseWriter, r *http.Request, u *User) e
 	snap.AgentID = d.ID
 	snap.Version = d.PublishedVersion + 1
 	raw, _ := json.Marshal(snap)
-	if _, e = tx.Exec("INSERT INTO agent_versions VALUES(?,?,?,?,?)", d.ID, snap.Version, string(raw), u.ID, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO agent_versions (agent_id,version,snapshot,published_by,published_at) VALUES(?,?,?,?,?)", d.ID, snap.Version, string(raw), u.ID, now()); e != nil {
 		return e
 	}
 	draft, _ := json.Marshal(d.Draft)

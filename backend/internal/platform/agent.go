@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"qingfly/edu-mall/internal/infra/mysqlx"
 )
 
 type AgentRun struct {
@@ -64,7 +66,7 @@ func (s *Server) agentHistory(w http.ResponseWriter, r *http.Request, u *User) e
 	return result(w, 200, map[string]any{"items": runs, "title": title, "agent_id": aid})
 }
 func (s *Server) threadRuns(ctx context.Context, uid, tid string) ([]AgentRun, error) {
-	rows, e := s.db.QueryContext(ctx, "SELECT r.id,r.thread_id,r.prompt,r.answer,r.status,r.error,r.created_at,COALESCE(s.agent_id,?),COALESCE(s.version,0),COALESCE(json_extract(s.snapshot,'$.name'),'小集') FROM (SELECT * FROM agent_runs WHERE user_id=? AND thread_id=? ORDER BY created_at DESC LIMIT 30) r LEFT JOIN agent_run_snapshots s ON s.run_id=r.id ORDER BY r.created_at", defaultAgentID, uid, tid)
+	rows, e := s.db.QueryContext(ctx, "SELECT r.id,r.thread_id,r.prompt,r.answer,r.status,r.error,r.created_at,COALESCE(s.agent_id,?),COALESCE(s.version,0),COALESCE(JSON_UNQUOTE(JSON_EXTRACT(s.snapshot,'$.name')),'小集') FROM (SELECT id,thread_id,prompt,answer,status,error,created_at FROM agent_runs WHERE user_id=? AND thread_id=? ORDER BY created_at DESC LIMIT 30) r LEFT JOIN agent_run_snapshots s ON s.run_id=r.id ORDER BY r.created_at", defaultAgentID, uid, tid)
 	if e != nil {
 		return nil, e
 	}
@@ -183,7 +185,7 @@ func (s *Server) agentRun(w http.ResponseWriter, r *http.Request, u *User) error
 	if running > 0 {
 		return fail(409, "请等待当前回答结束，或先停止生成")
 	}
-	if !s.limits.allow("agent:"+u.ID, 10) {
+	if !s.allow(r, "agent:"+u.ID, 10, time.Minute) {
 		return fail(429, "请求较多，请稍后再试")
 	}
 	tid := v.ThreadID
@@ -193,10 +195,10 @@ func (s *Server) agentRun(w http.ResponseWriter, r *http.Request, u *User) error
 		if len(title) > 30 {
 			title = title[:30]
 		}
-		if _, e = tx.Exec("INSERT INTO agent_threads VALUES(?,?,?,?)", tid, u.ID, string(title), now()); e != nil {
+		if _, e = tx.Exec("INSERT INTO agent_threads (id,user_id,title,created_at) VALUES(?,?,?,?)", tid, u.ID, string(title), now()); e != nil {
 			return e
 		}
-		if _, e = tx.Exec("INSERT INTO agent_thread_bindings VALUES(?,?)", tid, aid); e != nil {
+		if _, e = tx.Exec("INSERT INTO agent_thread_bindings (thread_id,agent_id) VALUES(?,?)", tid, aid); e != nil {
 			return e
 		}
 	} else {
@@ -217,7 +219,7 @@ func (s *Server) agentRun(w http.ResponseWriter, r *http.Request, u *User) error
 		return e
 	}
 	snapshotJSON, _ := json.Marshal(snapshot)
-	if _, e = tx.Exec("INSERT INTO agent_run_snapshots VALUES(?,?,?,?)", run.ID, aid, snapshot.Version, string(snapshotJSON)); e != nil {
+	if _, e = tx.Exec("INSERT INTO agent_run_snapshots (run_id,agent_id,version,snapshot) VALUES(?,?,?,?)", run.ID, aid, snapshot.Version, string(snapshotJSON)); e != nil {
 		return e
 	}
 	if e = tx.Commit(); e != nil {
@@ -436,7 +438,8 @@ func (s *Server) readTool(ctx context.Context, u *User, c toolCall) (string, err
 		if e := d.Decode(&args); e != nil || len(args.Query) > 300 {
 			return `{"error":"invalid search arguments"}`, nil
 		}
-		rows, e := s.db.QueryContext(ctx, productSelect+" WHERE p.status='available' AND (?='' OR instr(lower(p.title||p.description),lower(?))>0) ORDER BY p.created_at DESC LIMIT 8", args.Query, args.Query)
+		pattern := "%" + mysqlx.EscapeLike(strings.TrimSpace(args.Query)) + "%"
+		rows, e := s.db.QueryContext(ctx, productSelect+" WHERE p.status='available' AND (p.title LIKE ? OR p.description LIKE ?) ORDER BY p.created_at DESC,p.id DESC LIMIT 8", pattern, pattern)
 		if e != nil {
 			return "", e
 		}

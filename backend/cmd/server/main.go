@@ -1,124 +1,153 @@
+// Command server 是校园集市唯一的应用入口（模块化单体）。
+//
+// 启动顺序：读取配置 → 连接 MySQL（等待就绪）→ 执行迁移 → 连接 Redis → 组装应用 →
+// 启动后台任务 → 监听 HTTP。
+// 退出顺序（SIGTERM）：停止接收新请求并等待在途请求结束 → 取消后台任务并等待其退出 →
+// 释放雪花节点租约 → 关闭 Redis/MySQL。
 package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
-	"qingfly/edu-mall/internal/platform"
-	"strconv"
 	"syscall"
 	"time"
+
+	"qingfly/edu-mall/internal/config"
+	"qingfly/edu-mall/internal/infra/mysqlx"
+	"qingfly/edu-mall/internal/infra/redisx"
+	"qingfly/edu-mall/internal/platform"
 )
 
-func env(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
-}
-func keyFile(name string) string {
-	path := os.Getenv(name)
-	if path == "" {
-		return ""
-	}
-	b, e := os.ReadFile(path)
-	if e != nil {
-		slog.Error("cannot read key file", "name", name, "error", e)
-		os.Exit(1)
-	}
-	return string(b)
-}
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
-		client := http.Client{Timeout: 3 * time.Second}
-		resp, e := client.Get("http://127.0.0.1:8081/api/v1/health")
-		if e != nil {
-			os.Exit(1)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != 200 {
-			os.Exit(1)
-		}
-		return
+		os.Exit(healthcheck())
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	cfg := platform.Config{Production: os.Getenv("APP_ENV") == "production", PublicOrigin: os.Getenv("PUBLIC_ORIGIN"), AlipayAppID: os.Getenv("ALIPAY_APP_ID"), AlipaySellerID: os.Getenv("ALIPAY_SELLER_ID"), AlipayPrivateKey: keyFile("ALIPAY_PRIVATE_KEY_FILE"), AlipayPublicKey: keyFile("ALIPAY_PUBLIC_KEY_FILE"), AlipayGateway: os.Getenv("ALIPAY_GATEWAY"), ModelURL: os.Getenv("MODEL_BASE_URL"), ModelKey: os.Getenv("MODEL_API_KEY"), ModelName: os.Getenv("MODEL_NAME")}
-	cfg.UploadDir = env("UPLOAD_DIR", "data/uploads")
-	cfg.TrustedProxyCIDRs = os.Getenv("TRUSTED_PROXY_CIDRS")
-	cfg.AdminUserIDs = os.Getenv("ADMIN_USER_IDS")
-	smtpPort := 0
-	if raw := os.Getenv("SMTP_PORT"); raw != "" {
-		var e error
-		smtpPort, e = strconv.Atoi(raw)
-		if e != nil {
-			slog.Error("SMTP_PORT must be an integer")
-			os.Exit(1)
-		}
-	}
-	cfg.AuthCodeSecret = os.Getenv("AUTH_CODE_SECRET")
-	cfg.AuthDelivery = platform.DeliveryConfig{Mode: env("AUTH_DELIVERY_MODE", "disabled"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPPort: smtpPort, SMTPUser: os.Getenv("SMTP_USER"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), SMTPTLSMode: os.Getenv("SMTP_TLS_MODE"), SMSAccessKeyID: os.Getenv("SMS_ACCESS_KEY_ID"), SMSAccessKeySecret: os.Getenv("SMS_ACCESS_KEY_SECRET"), SMSSignName: os.Getenv("SMS_SIGN_NAME"), SMSTemplateCode: os.Getenv("SMS_TEMPLATE_CODE"), SMSRegion: os.Getenv("SMS_REGION")}
-	if e := platform.LoadAgentConnections(os.Getenv("AGENT_CONNECTIONS_FILE"), &cfg); e != nil {
-		slog.Error("agent connections configuration rejected", "error", e)
+	if err := run(); err != nil {
+		slog.Error("server exited", "error", err)
 		os.Exit(1)
 	}
-	db, e := platform.OpenStore(env("DATABASE_PATH", "data/campus.db"))
-	if e != nil {
-		slog.Error("database startup failed", "error", e)
-		os.Exit(1)
+}
+
+func healthcheck() int {
+	addr := os.Getenv("HTTP_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:8081"
 	}
-	defer db.Close()
-	app, e := platform.NewServer(db, cfg)
-	if e != nil {
-		slog.Error("configuration rejected", "error", e)
-		os.Exit(1)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 1
 	}
-	if os.Getenv("SEED_DEMO") == "true" {
-		if cfg.Production {
-			slog.Error("SEED_DEMO forbidden in production")
-			os.Exit(1)
-		}
-		if e = app.SeedDemo(); e != nil {
-			slog.Error("seed failed", "error", e)
-			os.Exit(1)
-		}
+	if host == "" || host == "0.0.0.0" {
+		host = "127.0.0.1"
 	}
-	srv := &http.Server{Addr: env("HTTP_ADDR", "127.0.0.1:8081"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/api/v1/health")
+	if err != nil {
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 1
+	}
+	return 0
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv.BaseContext = func(net.Listener) context.Context { return ctx }
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if e := app.ExpireUnpaid(); e != nil {
-					slog.Error("expiry failed", "error", e)
-				}
-				checkCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-				if e := app.ReconcilePayments(checkCtx); e != nil {
-					slog.Error("reconciliation failed", "error", e)
-				}
-				cancel()
-			}
-		}
-	}()
-	go func() {
-		slog.Info("campus server started", "address", srv.Addr)
-		if e := srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
-			slog.Error("http failed", "error", e)
-			stop()
-		}
-	}()
-	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+	startCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if e = srv.Shutdown(shutdown); e != nil {
-		slog.Error("shutdown failed", "error", e)
+	db, err := mysqlx.Open(startCtx, cfg.MySQL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err = mysqlx.Migrate(startCtx, db); err != nil {
+		return err
+	}
+	rdb, err := redisx.Open(startCtx, cfg.Redis)
+	if err != nil {
+		return err
+	}
+	defer rdb.Close()
+	app, err := platform.NewServer(db, rdb, cfg.App)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeCtx, done := context.WithTimeout(context.Background(), 2*time.Second)
+		defer done()
+		app.Close(closeCtx)
+	}()
+	if cfg.SeedDemo {
+		if err = app.SeedDemo(); err != nil {
+			return err
+		}
+	}
+
+	workersCtx, stopWorkers := context.WithCancel(context.Background())
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		app.Run(workersCtx)
+	}()
+
+	if cfg.PprofAddr != "" {
+		go servePprof(cfg.PprofAddr)
+	}
+
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	srv.BaseContext = func(net.Listener) context.Context { return ctx }
+	serveErr := make(chan error, 1)
+	go func() {
+		slog.Info("campus server started", "address", srv.Addr, "instance", cfg.App.Instance)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+		close(serveErr)
+	}()
+	select {
+	case <-ctx.Done():
+	case err = <-serveErr:
+	}
+	shutdown, done := context.WithTimeout(context.Background(), 15*time.Second)
+	defer done()
+	if e := srv.Shutdown(shutdown); e != nil {
+		slog.Error("http shutdown failed", "error", e)
+	}
+	stopWorkers()
+	select {
+	case <-workersDone:
+	case <-shutdown.Done():
+		slog.Warn("background workers did not stop in time")
+	}
+	slog.Info("campus server stopped")
+	return err
+}
+
+// servePprof 只应监听内网/本机地址（例如 127.0.0.1:6060），用于线上排查 CPU/内存/goroutine 泄漏。
+func servePprof(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	slog.Info("pprof listening", "address", addr)
+	if err := srv.ListenAndServe(); err != nil {
+		slog.Warn("pprof server stopped", "error", err)
 	}
 }

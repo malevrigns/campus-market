@@ -1,5 +1,7 @@
 package platform
 
+import "context"
+
 // SeedDemo is explicitly opt-in, never enabled in production. Demo users cannot
 // log in and demo listings cannot accept orders or messages.
 func (s *Server) SeedDemo() error {
@@ -8,7 +10,7 @@ func (s *Server) SeedDemo() error {
 		return e
 	}
 	defer tx.Rollback()
-	if _, e = tx.Exec("INSERT OR IGNORE INTO users VALUES(?,?,?,?,?)", "demo_seller", "showcase@invalid.example", "集市编辑部", "disabled", now()); e != nil {
+	if _, e = tx.Exec("INSERT IGNORE INTO users (id,email,name,password,created_at) VALUES(?,?,?,?,?)", "demo_seller", "showcase@invalid.example", "集市编辑部", "disabled", now()); e != nil {
 		return e
 	}
 	seeds := []struct {
@@ -26,10 +28,15 @@ func (s *Server) SeedDemo() error {
 	}
 	for i, p := range seeds {
 		pid := []string{"demo_1", "demo_2", "demo_3", "demo_4", "demo_5", "demo_6", "demo_7", "demo_8"}[i]
-		_, e = tx.Exec("INSERT OR IGNORE INTO products VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", pid, "demo_seller", p.title, p.description, p.price, p.category, p.campus, p.condition, "https://images.unsplash.com/"+p.image+"?auto=format&fit=crop&w=900&q=85", "available", 1, now()-int64(i)*60000)
+		t := now() - int64(i)*60000
+		_, e = tx.Exec("INSERT IGNORE INTO products (id,seller_id,title,description,price_ct,category,campus,item_condition,image,status,demo,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", pid, "demo_seller", p.title, p.description, p.price, p.category, p.campus, p.condition, "https://images.unsplash.com/"+p.image+"?auto=format&fit=crop&w=900&q=85", "available", 1, t, t)
 		if e != nil {
 			return e
 		}
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	s.productsChanged(context.Background())
+	return nil
 }

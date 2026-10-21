@@ -97,30 +97,13 @@ func (s *Server) initVerification() error {
 	}
 	email, sms := DeliveryAvailability(s.cfg.AuthDelivery)
 	s.verification = &verificationState{sender: sender, secret: secret, email: email, sms: sms, local: s.cfg.AuthDelivery.Mode == "local", inbox: map[string]previewCode{}}
-	_, e = s.db.Exec("INSERT OR IGNORE INTO auth_identities(user_id,channel,target,verified_at) SELECT id,'email',lower(email),0 FROM users WHERE email NOT LIKE '%@accounts.invalid'")
+	_, e = s.db.Exec("INSERT IGNORE INTO auth_identities (user_id,channel,target,verified_at) SELECT u.id,'email',lower(u.email),0 FROM users u LEFT JOIN auth_identities i ON i.user_id=u.id AND i.channel='email' WHERE i.user_id IS NULL AND u.email NOT LIKE '%@accounts.invalid'")
 	return e
 }
 func (s *Server) codeDigest(cid, channel, target, purpose, code string) string {
 	mac := hmac.New(sha256.New, s.verification.secret)
 	mac.Write([]byte(strings.Join([]string{cid, channel, target, purpose, code}, "\x00")))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-func takeAuthQuota(tx *sql.Tx, bucket string, limit int, window int64) error {
-	var started int64
-	var count int
-	e := tx.QueryRow("SELECT window_start,count FROM auth_quotas WHERE bucket=?", bucket).Scan(&started, &count)
-	if e != nil && !errors.Is(e, sql.ErrNoRows) {
-		return e
-	}
-	if now()-started >= window {
-		started = now()
-		count = 0
-	}
-	if count >= limit {
-		return fail(429, "验证码请求过于频繁，请稍后再试")
-	}
-	_, e = tx.Exec("INSERT INTO auth_quotas VALUES(?,?,?) ON CONFLICT(bucket) DO UPDATE SET window_start=excluded.window_start,count=excluded.count", bucket, started, count+1)
-	return e
 }
 func (s *Server) requestCode(w http.ResponseWriter, r *http.Request, _ *User) error {
 	var v struct {
@@ -181,13 +164,14 @@ func (s *Server) requestCode(w http.ResponseWriter, r *http.Request, _ *User) er
 		w.Header().Set("Retry-After", fmt.Sprint(seconds))
 		return fail(429, fmt.Sprintf("请在 %d 秒后重新获取验证码", seconds))
 	}
+	// 短信/邮件防刷配额改用 Redis 滑动窗口：单号码 10 次/天、单 IP 60 次/小时、单通道 500 次/天（控制短信费用上限）。
 	for _, q := range []struct {
 		k      string
 		n      int
-		window int64
-	}{{"target:" + digest(v.Channel+target), 10, 24 * 60 * 60 * 1000}, {"ip:" + digest(s.clientIP(r)), 60, 60 * 60 * 1000}, {"total:" + v.Channel, 500, 24 * 60 * 60 * 1000}} {
-		if e = takeAuthQuota(tx, q.k, q.n, q.window); e != nil {
-			return e
+		window time.Duration
+	}{{"target:" + digest(v.Channel+target), 10, 24 * time.Hour}, {"ip:" + digest(s.clientIP(r)), 60, time.Hour}, {"total:" + v.Channel, 500, 24 * time.Hour}} {
+		if !s.limiter.Window(r.Context(), "authcode:"+q.k, q.n, q.window).Allowed {
+			return fail(429, "验证码请求过于频繁，请稍后再试")
 		}
 	}
 	if _, e = tx.Exec("DELETE FROM auth_codes WHERE expires_at<?", now()-24*60*60*1000); e != nil {
@@ -270,7 +254,9 @@ func (s *Server) consumeCode(tx *sql.Tx, p CodeProof, purpose, subject string) e
 	var hash, storedSubject, state string
 	var expires int64
 	var attempts int
-	e := tx.QueryRow("SELECT code_hash,subject_id,expires_at,attempts,state FROM auth_codes WHERE id=? AND channel=? AND target=? AND purpose=?", p.ChallengeID, p.Channel, p.Target, purpose).Scan(&hash, &storedSubject, &expires, &attempts, &state)
+	// FOR UPDATE 锁住验证码行：两个并发请求用同一验证码时，第二个会等第一个提交后读到 state='used'，
+	// 防止一码多用（快照读下两个事务都会看到 state='sent'）。
+	e := tx.QueryRow("SELECT code_hash,subject_id,expires_at,attempts,state FROM auth_codes WHERE id=? AND channel=? AND target=? AND purpose=? FOR UPDATE", p.ChallengeID, p.Channel, p.Target, purpose).Scan(&hash, &storedSubject, &expires, &attempts, &state)
 	if errors.Is(e, sql.ErrNoRows) {
 		return fail(400, "验证码无效或用途不匹配，请重新获取")
 	}

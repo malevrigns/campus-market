@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"qingfly/edu-mall/internal/infra/mysqlx"
 )
 
 type User struct {
@@ -36,24 +38,35 @@ func (s *Server) currentUser(r *http.Request) (*User, error) {
 	if e != nil {
 		return nil, fail(401, "请先登录")
 	}
-	u, e := s.scanUser(s.db.QueryRowContext(r.Context(), userSelect+" JOIN sessions s ON s.user_id=u.id WHERE s.hash=? AND s.expires_at>?", digest(c.Value), now()))
+	hash := digest(c.Value)
+	if u, ok, revoked := s.cachedSession(r.Context(), hash); revoked {
+		return nil, fail(401, "登录已过期，请重新登录")
+	} else if ok {
+		return u, nil
+	}
+	u := &User{}
+	var expires int64
+	e = s.db.QueryRowContext(r.Context(), "SELECT u.id,u.name,COALESCE(e.target,''),COALESCE(p.target,''),COALESCE(e.verified_at,0)>0,COALESCE(p.verified_at,0)>0,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN auth_identities e ON e.user_id=u.id AND e.channel='email' LEFT JOIN auth_identities p ON p.user_id=u.id AND p.channel='sms' WHERE s.hash=? AND s.expires_at>?", hash, now()).Scan(&u.ID, &u.Name, &u.Email, &u.Phone, &u.EmailVerified, &u.PhoneVerified, &expires)
 	if errors.Is(e, sql.ErrNoRows) {
 		return nil, fail(401, "登录已过期，请重新登录")
 	}
-	return u, e
+	if e != nil {
+		return nil, e
+	}
+	s.storeSession(r.Context(), hash, u, expires)
+	u.IsAdmin = s.isAgentAdmin(u.ID)
+	return u, nil
 }
 func (s *Server) newSession(tx *sql.Tx, r *http.Request, uid string) (string, time.Time, error) {
 	token := id("")
 	expires := time.Now().Add(7 * 24 * time.Hour)
-	if _, e := tx.Exec("DELETE FROM sessions WHERE expires_at<?", now()); e != nil {
-		return "", expires, e
-	}
 	if old, e := s.sessionCookie(r); e == nil {
 		if _, e = tx.Exec("DELETE FROM sessions WHERE hash=? AND user_id=?", digest(old.Value), uid); e != nil {
 			return "", expires, e
 		}
+		s.revokeSessions(r.Context(), digest(old.Value))
 	}
-	_, e := tx.Exec("INSERT INTO sessions VALUES(?,?,?)", digest(token), uid, expires.UnixMilli())
+	_, e := tx.Exec("INSERT INTO sessions (hash,user_id,expires_at) VALUES(?,?,?)", digest(token), uid, expires.UnixMilli())
 	return token, expires, e
 }
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
@@ -66,7 +79,8 @@ func (s *Server) setSession(w http.ResponseWriter, r *http.Request, u *User, ver
 	}
 	defer tx.Rollback()
 	var currentHash string
-	if e = tx.QueryRow("SELECT password FROM users WHERE id=?", u.ID).Scan(&currentHash); e != nil {
+	// FOR UPDATE 是"当前读"：RR 隔离级别下普通 SELECT 读的是事务快照，可能看不到刚提交的改密。
+	if e = tx.QueryRow("SELECT password FROM users WHERE id=? FOR UPDATE", u.ID).Scan(&currentHash); e != nil {
 		return e
 	}
 	if currentHash != verifiedHash {
@@ -155,10 +169,16 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, _ *User) error
 	if v.Channel == "sms" {
 		email = "phone+" + uid + "@accounts.invalid"
 	}
-	if _, e = tx.Exec("INSERT INTO users VALUES(?,?,?,?,?)", uid, email, v.Name, string(hash), now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO users (id,email,name,password,created_at) VALUES(?,?,?,?,?)", uid, email, v.Name, string(hash), now()); e != nil {
+		if mysqlx.IsDuplicate(e) {
+			return fail(409, "该邮箱或手机号已注册，请直接登录或找回密码")
+		}
 		return e
 	}
-	if _, e = tx.Exec("INSERT INTO auth_identities VALUES(?,?,?,?)", uid, v.Channel, v.Target, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO auth_identities (user_id,channel,target,verified_at) VALUES(?,?,?,?)", uid, v.Channel, v.Target, now()); e != nil {
+		if mysqlx.IsDuplicate(e) {
+			return fail(409, "该邮箱或手机号已注册，请直接登录或找回密码")
+		}
 		return e
 	}
 	token, expires, e := s.newSession(tx, r, uid)
@@ -298,6 +318,16 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request, _ *User) 
 		return e
 	}
 	var current int
+	revoked := []string{}
+	if rows, e := tx.Query("SELECT hash FROM sessions WHERE user_id=?", uid); e == nil {
+		for rows.Next() {
+			var h string
+			if rows.Scan(&h) == nil {
+				revoked = append(revoked, h)
+			}
+		}
+		rows.Close()
+	}
 	if cookie, e := s.sessionCookie(r); e == nil {
 		if e = tx.QueryRow("SELECT COUNT(*) FROM sessions WHERE hash=? AND user_id=?", digest(cookie.Value), uid).Scan(&current); e != nil {
 			return e
@@ -318,6 +348,8 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request, _ *User) 
 	if e = tx.Commit(); e != nil {
 		return e
 	}
+	// 吊销写墓碑即可：墓碑之后的回填因 SET NX 失败，墓碑之前的回填被墓碑覆盖。
+	s.revokeSessions(r.Context(), revoked...)
 	if current > 0 {
 		s.clearSessionCookie(w, r)
 	}
@@ -356,7 +388,10 @@ func (s *Server) bindIdentity(w http.ResponseWriter, r *http.Request, u *User) e
 	if e = s.consumeCode(tx, p, "bind", u.ID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec("INSERT INTO auth_identities VALUES(?,?,?,?) ON CONFLICT(user_id,channel) DO UPDATE SET target=excluded.target,verified_at=excluded.verified_at", u.ID, p.Channel, p.Target, now()); e != nil {
+	if _, e = tx.Exec("INSERT INTO auth_identities (user_id,channel,target,verified_at) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE target=VALUES(target),verified_at=VALUES(verified_at)", u.ID, p.Channel, p.Target, now()); e != nil {
+		if mysqlx.IsDuplicate(e) {
+			return fail(409, "此邮箱或手机号已被其他账号使用")
+		}
 		return e
 	}
 	if p.Channel == "email" {
@@ -371,6 +406,7 @@ func (s *Server) bindIdentity(w http.ResponseWriter, r *http.Request, u *User) e
 	if e = tx.Commit(); e != nil {
 		return e
 	}
+	s.refreshUserSessions(r.Context(), u.ID)
 	return result(w, 200, fresh)
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request, u *User) error { return result(w, 200, u) }
@@ -385,6 +421,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, _ *User) error {
 		if _, e = s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE hash=?", digest(c.Value)); e != nil {
 			return e
 		}
+		s.revokeSessions(r.Context(), digest(c.Value))
 	}
 	s.clearSessionCookie(w, r)
 	return result(w, 200, map[string]bool{"logged_out": true})

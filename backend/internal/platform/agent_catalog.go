@@ -217,13 +217,13 @@ func (s *Server) initAgentCatalog() error {
 	if seeded == 0 {
 		for _, c := range defaults {
 			raw, _ := json.Marshal(c.Config)
-			if _, e = tx.Exec("INSERT OR IGNORE INTO agent_capabilities VALUES(?,?,?,?,?,?,?,?)", c.ID, c.Kind, c.Name, c.Description, string(raw), c.Enabled, 1, now()); e != nil {
+			if _, e = tx.Exec("INSERT IGNORE INTO agent_capabilities (id,kind,name,description,config,enabled,revision,updated_at) VALUES(?,?,?,?,?,?,?,?)", c.ID, c.Kind, c.Name, c.Description, string(raw), c.Enabled, 1, now()); e != nil {
 				return e
 			}
 		}
 		d := AgentDraft{Name: "小集", Description: "你的校园购物助手", SystemPrompt: "帮助同学搜索好物、比较价格、查询自己的订单并准备面交验货清单。需要时先询问预算与校区。", Welcome: "今天想发现点什么？", Suggestions: []string{"300 元以内，有什么值得入手的好物？", "买二手相机，面交时要检查什么？", "帮我看看最近的订单状态", "想给宿舍添点氛围感，有推荐吗？"}, ModelID: "cap_default_model", ToolIDs: []string{"cap_search_products", "cap_my_orders"}, MaxIterations: 5, MaxTokens: 1800, TimeoutSeconds: 90, Enabled: true}
 		raw, _ := json.Marshal(d)
-		if _, e = tx.Exec("INSERT INTO agent_definitions(id,draft,enabled,revision,published_version,updated_at) VALUES(?,?,1,1,1,?)", defaultAgentID, string(raw), now()); e != nil {
+		if _, e = tx.Exec("INSERT IGNORE INTO agent_definitions (id,draft,enabled,revision,published_version,updated_at) VALUES(?,?,1,1,1,?)", defaultAgentID, string(raw), now()); e != nil {
 			return e
 		}
 		snap, e := s.resolveDraft(ctx, tx, d, false)
@@ -233,11 +233,11 @@ func (s *Server) initAgentCatalog() error {
 		snap.AgentID = defaultAgentID
 		snap.Version = 1
 		raw, _ = json.Marshal(snap)
-		if _, e = tx.Exec("INSERT INTO agent_versions VALUES(?,?,?,?,?)", defaultAgentID, 1, string(raw), "system", now()); e != nil {
+		if _, e = tx.Exec("INSERT IGNORE INTO agent_versions (agent_id,version,snapshot,published_by,published_at) VALUES(?,?,?,?,?)", defaultAgentID, 1, string(raw), "system", now()); e != nil {
 			return e
 		}
 	}
-	if _, e = tx.Exec("INSERT OR IGNORE INTO agent_thread_bindings SELECT id,? FROM agent_threads", defaultAgentID); e != nil {
+	if _, e = tx.Exec("INSERT IGNORE INTO agent_thread_bindings (thread_id,agent_id) SELECT t.id,? FROM agent_threads t LEFT JOIN agent_thread_bindings b ON b.thread_id=t.id WHERE b.thread_id IS NULL", defaultAgentID); e != nil {
 		return e
 	}
 	return tx.Commit()

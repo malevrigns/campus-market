@@ -83,7 +83,7 @@ func (s *Server) ReconcilePayments(ctx context.Context) error {
 	if s.pay == nil {
 		return nil
 	}
-	rows, e := s.db.QueryContext(ctx, orderSelect+" WHERE status='pending' AND id IN(SELECT order_id FROM payments) ORDER BY COALESCE((SELECT checked_at FROM payment_checks WHERE order_id=orders.id),0),created_at LIMIT 30")
+	rows, e := s.db.QueryContext(ctx, "SELECT "+orderColumns+" FROM orders o WHERE o.status='pending' AND EXISTS(SELECT 1 FROM payments p WHERE p.order_id=o.id) ORDER BY COALESCE((SELECT c.checked_at FROM payment_checks c WHERE c.order_id=o.id),0),o.created_at LIMIT 30")
 	if e != nil {
 		return e
 	}
@@ -105,7 +105,7 @@ func (s *Server) ReconcilePayments(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, e = s.db.ExecContext(ctx, "INSERT INTO payment_checks VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET checked_at=excluded.checked_at", o.ID, now()); e != nil {
+		if _, e = s.db.ExecContext(ctx, "INSERT INTO payment_checks (order_id,checked_at) VALUES(?,?) ON DUPLICATE KEY UPDATE checked_at=VALUES(checked_at)", o.ID, now()); e != nil {
 			return e
 		}
 		if e = s.reconcileOne(ctx, o); e != nil {

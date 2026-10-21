@@ -2,14 +2,17 @@ package platform
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"qingfly/edu-mall/internal/testenv"
 )
 
 type testClient struct {
@@ -44,19 +47,38 @@ func (c *testClient) call(method, path string, body any) (int, map[string]any) {
 	}
 	return w.Code, out.Data
 }
-func testApp(t *testing.T) (*Server, string) {
+func testApp(t *testing.T) (*Server, *sql.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	db, e := OpenStore(path)
+	return testAppWith(t, Config{AuthDelivery: DeliveryConfig{Mode: "local"}})
+}
+
+// testAppWith 为每个测试创建独立的数据库和 Redis 前缀。
+func testAppWith(t *testing.T, cfg Config) (*Server, *sql.DB) {
+	t.Helper()
+	db := testenv.MySQL(t)
+	rdb, prefix := testenv.Redis(t)
+	cfg.RedisPrefix = prefix
+	a, e := NewServer(db, rdb, cfg)
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { db.Close() })
-	a, e := NewServer(db, Config{AuthDelivery: DeliveryConfig{Mode: "local"}})
-	if e != nil {
-		t.Fatal(e)
-	}
-	return a, path
+	t.Cleanup(func() { a.Close(context.Background()) })
+	return a, db
+}
+
+// runWorkers 启动后台任务（延迟队列、抢购落库等），测试结束时停止。
+func runWorkers(t *testing.T, a *Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 func account(t *testing.T, a *Server, n string) *testClient {
 	t.Helper()
@@ -120,7 +142,7 @@ func TestAuthAndServerAuthoritativeOrder(t *testing.T) {
 	}
 }
 func TestConcurrentInventoryAndPersistence(t *testing.T) {
-	a, path := testApp(t)
+	a, db := testApp(t)
 	seller := account(t, a, "seller")
 	id := publish(t, seller)
 	clients := []*testClient{}
@@ -150,13 +172,8 @@ func TestConcurrentInventoryAndPersistence(t *testing.T) {
 	if won != 1 {
 		t.Fatalf("sold %d times", won)
 	}
-	db, e := OpenStore(path)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer db.Close()
 	var count int
-	if e = db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&count); e != nil || count != 1 {
+	if e := db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&count); e != nil || count != 1 {
 		t.Fatalf("durability: %d %v", count, e)
 	}
 }
