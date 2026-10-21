@@ -259,7 +259,7 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request, u *U
 	return result(w, 201, map[string]string{"id": conv})
 }
 
-const conversationColumns = "c.id,c.product_id,p.title,p.image,peer.id,peer.name,c.seq,c.seq-COALESCE(rc.seq,0),c.last_message,c.updated_at"
+const conversationColumns = "c.id AS id,c.product_id AS product_id,p.title AS product_title,p.image AS image,peer.id AS peer_id,peer.name AS peer_name,c.seq AS seq,c.seq-COALESCE(rc.seq,0) AS unread,c.last_message AS last_message,c.updated_at AS updated_at"
 
 func (s *Server) conversations(w http.ResponseWriter, r *http.Request, u *User) error {
 	// 同订单列表：OR 条件拆成两个走各自索引的子查询 UNION ALL。

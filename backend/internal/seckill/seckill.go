@@ -133,7 +133,9 @@ func New(db *sql.DB, rdb redis.UniversalClient, cfg Config, newID func() (string
 		mismatches: map[string][2]int{}}
 }
 
-func (e *Engine) key(saleID, part string) string { return e.cfg.Prefix + ":flash:" + saleID + ":" + part }
+func (e *Engine) key(saleID, part string) string {
+	return e.cfg.Prefix + ":flash:" + saleID + ":" + part
+}
 
 func nowMs() int64 { return time.Now().UnixMilli() }
 
@@ -333,6 +335,12 @@ func (e *Engine) Attempt(ctx context.Context, sale Sale, userID string) (Ticket,
 	// 本地售罄标记：售罄后的海量请求直接在本进程拒绝，不再打 Redis。
 	// 标记只保留 500ms，因为订单取消/对账可能把库存补回来。
 	if until, ok := e.soldOut.Load(sale.ID); ok && until.(int64) > nowMs() {
+		// 已抢到的用户重复请求仍要拿到自己的资格：只做一次 O(1) 的 HGET，比执行完整脚本轻得多。
+		if raw, err := e.rdb.HGet(ctx, e.key(sale.ID, "tickets"), userID).Result(); err == nil {
+			if t := parseTicket(sale.ID, raw); t.State != "failed" && t.State != "none" {
+				return e.withOrderStatus(ctx, t, userID), nil
+			}
+		}
 		return Ticket{}, ErrSoldOut
 	}
 	oid, err := e.newID()
@@ -352,11 +360,7 @@ func (e *Engine) Attempt(ctx context.Context, sale Sale, userID string) (Ticket,
 	raw, _ := res[1].(string)
 	switch code {
 	case 0, 1:
-		t := parseTicket(sale.ID, raw)
-		if t.State == "success" || t.State == "cancelled" {
-			t.OrderStatus = e.orderStatus(ctx, t.OrderID, userID)
-		}
-		return t, nil
+		return e.withOrderStatus(ctx, parseTicket(sale.ID, raw), userID), nil
 	case -1:
 		return Ticket{}, ErrUnavailable
 	case -2:
@@ -370,6 +374,13 @@ func (e *Engine) Attempt(ctx context.Context, sale Sale, userID string) (Ticket,
 		return Ticket{}, ErrOffline
 	}
 	return Ticket{}, fmt.Errorf("seckill: unexpected script result %d", code)
+}
+
+func (e *Engine) withOrderStatus(ctx context.Context, t Ticket, userID string) Ticket {
+	if t.State == "success" || t.State == "cancelled" {
+		t.OrderStatus = e.orderStatus(ctx, t.OrderID, userID)
+	}
+	return t
 }
 
 func (e *Engine) orderStatus(ctx context.Context, orderID, userID string) string {

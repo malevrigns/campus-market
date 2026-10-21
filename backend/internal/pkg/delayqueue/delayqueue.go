@@ -73,9 +73,9 @@ type Options struct {
 }
 
 type Queue struct {
-	rdb                            redis.Cmdable
+	rdb                             redis.Cmdable
 	ready, inflight, attempts, dead string
-	opt                            Options
+	opt                             Options
 }
 
 func New(rdb redis.Cmdable, prefix, name string, opt Options) *Queue {
