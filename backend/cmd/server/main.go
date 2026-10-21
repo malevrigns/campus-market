@@ -112,7 +112,7 @@ func run() error {
 	srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("campus server started", "address", srv.Addr, "instance", cfg.App.Instance)
+		slog.Info("campus server started", "address", srv.Addr, "instance", app.Instance())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}

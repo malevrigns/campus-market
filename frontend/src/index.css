@@ -364,10 +364,19 @@ small {
   color: var(--muted);
   letter-spacing: 1px;
 }
-.announcement > span {
+.announcement > span,
+.announcement > button {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+.announcement > button {
+  padding: 0;
+  letter-spacing: inherit;
+  color: inherit;
+}
+.announcement > button:hover {
+  color: var(--lime);
 }
 .status-dot {
   display: inline-block;

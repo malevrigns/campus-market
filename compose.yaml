@@ -1,4 +1,68 @@
+# 生产部署：Caddy(HTTPS) → API(可水平扩容) → MySQL 8 + Redis 7。
+# MySQL/Redis 不对公网暴露端口；数据、上传图片、证书均使用持久卷。
 services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: campus
+      MYSQL_USER: campus
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --transaction-isolation=REPEATABLE-READ
+      - --max-connections=500
+      - --innodb-buffer-pool-size=512M
+      - --innodb-flush-log-at-trx-commit=1
+      - --sync-binlog=1
+      - --slow-query-log=ON
+      - --long-query-time=0.2
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks: [campus]
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping -h 127.0.0.1 -ucampus -p"$$MYSQL_PASSWORD" --silent']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # AOF everysec：抢购库存、延迟队列、Stream 消息最多丢 1 秒（数据库是最终真相，对账任务兜底）。
+    # noeviction：内存满时拒绝写入而不是淘汰 key，避免库存/队列 key 被 LRU 淘汰。
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 384mb
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    volumes:
+      - redis-data:/data
+    networks: [campus]
+    healthcheck:
+      test: [CMD-SHELL, 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
   api:
     build:
       context: .
@@ -13,7 +77,9 @@ services:
     environment:
       APP_ENV: production
       HTTP_ADDR: :8081
-      DATABASE_PATH: /data/campus.db
+      DATABASE_DSN: campus:${MYSQL_PASSWORD}@tcp(mysql:3306)/campus
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       UPLOAD_DIR: /data/uploads
       PUBLIC_ORIGIN: https://${DOMAIN:?Set DOMAIN in .env}
       TRUSTED_PROXY_CIDRS: 172.30.250.0/24
@@ -27,9 +93,12 @@ services:
       ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
       AGENT_CONNECTIONS_FILE: ${AGENT_CONNECTIONS_FILE:-}
     volumes:
-      - campus-data:/data
+      - upload-data:/data
       - ./secrets:/run/secrets:ro
     networks: [campus]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -39,10 +108,10 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
     stop_grace_period: 20s
     mem_limit: 768m
-    pids_limit: 128
+    pids_limit: 256
     logging:
       driver: json-file
       options: { max-size: 10m, max-file: '3' }
@@ -65,7 +134,9 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: '3' }
 volumes:
-  campus-data:
+  mysql-data:
+  redis-data:
+  upload-data:
   caddy-data:
   caddy-config:
 networks:

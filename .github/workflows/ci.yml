@@ -5,7 +5,27 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+    env:
+      TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/
+      TEST_REDIS_ADDR: 127.0.0.1:6379
+      E2E_MYSQL_DSN_BASE: root:root@tcp(127.0.0.1:3306)/
+      E2E_REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -17,12 +37,23 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Backend validation
+      - name: Backend validation (MySQL 8 + Redis 7 integration tests, race detector)
         working-directory: backend
         run: |
-          go test -race ./...
+          test -z "$(gofmt -l .)"
           go vet ./...
+          go test -race -count=1 ./...
           go build ./cmd/server
+      - name: Flash sale load & consistency check
+        working-directory: backend
+        run: |
+          mysql_dsn='root:root@tcp(127.0.0.1:3306)/campus_bench'
+          mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS campus_bench CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+          go build -o /tmp/campus ./cmd/server
+          go build -o /tmp/flashbench ./cmd/flashbench
+          DATABASE_DSN="$mysql_dsn" REDIS_ADDR=127.0.0.1:6379 REDIS_PREFIX=bench TRUSTED_PROXY_CIDRS=127.0.0.1/32 /tmp/campus > /tmp/server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8081/api/v1/health && break; sleep 1; done
+          DATABASE_DSN="$mysql_dsn" REDIS_PREFIX=bench /tmp/flashbench -users 3000 -stock 200 -c 200
       - name: Dependencies and unit tests
         working-directory: frontend
         run: |

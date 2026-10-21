@@ -4,7 +4,7 @@ import zhCN from 'antd/locale/zh_CN'
 import {
   ArrowUpOutlined,
   AppstoreOutlined,
-  EnvironmentOutlined,
+  FireOutlined,
   HeartOutlined,
   MessageOutlined,
   PlusOutlined,
@@ -24,8 +24,11 @@ import './widget.css'
 const Messages = lazy(() => import('./components/Messages'))
 const Orders = lazy(() => import('./components/Orders'))
 const AgentAdmin = lazy(() => import('./components/AgentAdmin'))
+const FlashSales = lazy(() => import('./components/FlashSales'))
 const readPage = () =>
-  ['messages', 'agent-admin', 'orders', 'profile', 'favorites', 'selling'].includes(location.hash.slice(1))
+  ['messages', 'agent-admin', 'orders', 'profile', 'favorites', 'selling', 'flash'].includes(
+    location.hash.slice(1),
+  )
     ? location.hash.slice(1)
     : 'home'
 const NAV = [
@@ -227,6 +230,7 @@ function Shell({ themeMode, onToggleTheme }) {
         <nav className="desktop-nav" aria-label="主导航">
           {[
             { id: 'home', name: '发现好物' },
+            { id: 'flash', name: '限时抢购' },
             { id: 'messages', name: '消息' },
             { id: 'agent', name: 'AI 助手' },
           ].map((n) => (
@@ -268,16 +272,16 @@ function Shell({ themeMode, onToggleTheme }) {
             <span className="status-dot" />
             让闲置遇见下一位心动的同学
           </span>
-          <span className="announcement-right">
-            <EnvironmentOutlined />
-            同校发现 · 当面交接 <span>↗</span>
-          </span>
+          <button className="announcement-right" onClick={() => navigate('flash')}>
+            <FireOutlined />
+            限时抢购进行中 <span>↗</span>
+          </button>
         </div>
       )}
       <main id="main" className={isWorkspace ? 'workspace-main' : 'main-container'}>
-        {page !== 'home' && !authReady ? (
+        {!['home', 'flash'].includes(page) && !authReady ? (
           <Loading />
-        ) : page !== 'home' && !user ? (
+        ) : !['home', 'flash'].includes(page) && !user ? (
           <div className="auth-gate">
             <span className="eyebrow">YOUR CAMPUS, CONNECTED</span>
             <h1>
@@ -304,6 +308,14 @@ function Shell({ themeMode, onToggleTheme }) {
                 revision={revision}
                 onAgent={() => navigate('agent')}
                 user={user}
+              />
+            )}
+            {page === 'flash' && (
+              <FlashSales
+                user={user}
+                onRequireUser={requireUser}
+                onOrders={() => navigate('orders')}
+                onOpenProduct={openProduct}
               />
             )}
             {page === 'messages' && (

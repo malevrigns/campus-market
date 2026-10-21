@@ -105,7 +105,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 // allowRequest 是入口级限流：
-//   - 所有接口按客户端 IP 令牌桶限速（20 req/s，突发 300），挡住脚本刷接口；
+//   - 所有接口按客户端 IP 令牌桶限速（50 req/s，突发 500），挡住脚本刷接口。
+//     阈值刻意放宽：校园网大量学生共用少数出口 IP（NAT），按 IP 卡太紧会误伤正常用户，
+//     精细限流放在登录后的用户维度（发消息、下单、抢购各自独立配额）；
 //   - 登录/注册等凭证接口按 IP 滑动窗口 30 次/分钟，防撞库；
 //   - 支付回调单独计数，避免和普通流量互相影响。
 func (s *Server) allowRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -123,7 +125,7 @@ func (s *Server) allowRequest(w http.ResponseWriter, r *http.Request) bool {
 		v := s.limiter.Window(ctx, "ip:"+ip+":auth", 30, time.Minute)
 		res.allowed, res.retry = v.Allowed, v.RetryAfter
 	default:
-		v := s.limiter.Bucket(ctx, "ip:"+ip, 20, 300)
+		v := s.limiter.Bucket(ctx, "ip:"+ip, 50, 500)
 		res.allowed, res.retry = v.Allowed, v.RetryAfter
 	}
 	if res.allowed {

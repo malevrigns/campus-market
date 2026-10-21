@@ -67,7 +67,7 @@ func (s *Server) Run(ctx context.Context) {
 	periodic("flash-reconcile", 15*time.Second, s.flash.Reconcile)
 	periodic("expiry-scan", time.Minute, s.ExpireUnpaid)
 	periodic("payment-reconcile", 30*time.Second, s.ReconcilePayments)
-	periodic("session-cleanup", 10*time.Minute, s.cleanupSessions)
+	periodic("cleanup", 10*time.Minute, s.cleanupExpired)
 	<-ctx.Done()
 	wg.Wait()
 }
@@ -82,15 +82,22 @@ func safeRun(ctx context.Context, fn func(context.Context) error) (err error) {
 	return fn(ctx)
 }
 
-// cleanupSessions 分批删除过期会话，避免一次大删除长时间持有锁、产生大事务。
-func (s *Server) cleanupSessions(ctx context.Context) error {
-	for i := 0; i < 20; i++ {
-		res, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at<? LIMIT 1000", now())
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n < 1000 {
-			return nil
+// cleanupExpired 分批删除过期会话与验证码：每批 1000 行、多批循环，
+// 避免一次性大 DELETE 形成大事务、长时间持有锁和产生主从延迟。
+// （原实现在每次登录/发验证码时顺带范围删除，并发时会争抢间隙锁，已移到这里统一处理。）
+func (s *Server) cleanupExpired(ctx context.Context) error {
+	for _, q := range []struct {
+		stmt   string
+		before int64
+	}{{"DELETE FROM sessions WHERE expires_at<? LIMIT 1000", now()}, {"DELETE FROM auth_codes WHERE expires_at<? LIMIT 1000", now() - 24*time.Hour.Milliseconds()}} {
+		for i := 0; i < 20; i++ {
+			res, err := s.db.ExecContext(ctx, q.stmt, q.before)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n < 1000 {
+				break
+			}
 		}
 	}
 	return nil

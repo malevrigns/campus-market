@@ -85,7 +85,9 @@ export default function Shop({
     setMoreBusy(true)
     try {
       const p = params()
-      p.set('offset', String(data.items.length))
+      // 优先使用游标分页（后端 keyset 分页，翻页不重复不漏），旧接口回退到 offset。
+      if (data.next_cursor) p.set('cursor', data.next_cursor)
+      else p.set('offset', String(data.items.length))
       const d = await api(`/products?${p}`, { signal: ac.signal })
       if (ac.signal.aborted) return
       setData((old) => ({

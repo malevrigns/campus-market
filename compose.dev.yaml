@@ -1,0 +1,40 @@
+# 本地开发与测试依赖：MySQL 8 + Redis 7，只监听本机端口。
+#   docker compose -f compose.dev.yaml up -d --wait
+# 账号 campus/campus 拥有 campus 及 campus_* 库的全部权限（测试会为每个用例创建独立数据库）。
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: campus
+      MYSQL_USER: campus
+      MYSQL_PASSWORD: campus
+      MYSQL_ROOT_PASSWORD: campus-root
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --max-connections=500
+      - --slow-query-log=ON
+      - --long-query-time=0.2
+    ports: ['127.0.0.1:3306:3306']
+    volumes:
+      - dev-mysql:/var/lib/mysql
+      - ./deploy/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping -h 127.0.0.1 -ucampus -pcampus --silent']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, 'yes', --maxmemory-policy, noeviction]
+    ports: ['127.0.0.1:6379:6379']
+    volumes:
+      - dev-redis:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  dev-mysql:
+  dev-redis:

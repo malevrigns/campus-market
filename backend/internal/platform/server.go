@@ -228,6 +228,9 @@ func (s *Server) Close(ctx context.Context) {
 	}
 }
 
+// Instance 返回实例标识（日志、Stream 消费者名）。
+func (s *Server) Instance() string { return s.cfg.Instance }
+
 func (s *Server) newOrderID() (string, error) {
 	n, e := s.ids.Next()
 	if e != nil {

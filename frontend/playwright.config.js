@@ -20,7 +20,10 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         HTTP_ADDR: '127.0.0.1:18091',
-        DATABASE_PATH: `data/e2e-${process.pid}.db`,
+        // 每次运行使用独立的 MySQL 库与 Redis 前缀，testfixture 会重建它们（需先 docker compose 启动依赖）。
+        DATABASE_DSN: `${process.env.E2E_MYSQL_DSN_BASE || 'campus:campus@tcp(127.0.0.1:3306)/'}campus_e2e_${process.pid}`,
+        REDIS_ADDR: process.env.E2E_REDIS_ADDR || '127.0.0.1:6379',
+        REDIS_PREFIX: `campus_e2e_${process.pid}`,
         SEED_DEMO: 'true',
         APP_ENV: 'development',
         PUBLIC_ORIGIN: '',

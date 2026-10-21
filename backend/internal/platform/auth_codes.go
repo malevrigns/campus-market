@@ -174,9 +174,6 @@ func (s *Server) requestCode(w http.ResponseWriter, r *http.Request, _ *User) er
 			return fail(429, "验证码请求过于频繁，请稍后再试")
 		}
 	}
-	if _, e = tx.Exec("DELETE FROM auth_codes WHERE expires_at<?", now()-24*60*60*1000); e != nil {
-		return e
-	}
 	if _, e = tx.Exec("UPDATE auth_codes SET state='superseded' WHERE channel=? AND target=? AND purpose=? AND state='sent'", v.Channel, target, v.Purpose); e != nil {
 		return e
 	}
