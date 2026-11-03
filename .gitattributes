@@ -1,0 +1,2 @@
+# Keep Go sources LF so `gofmt -l` behaves the same on Windows and Linux.
+*.go text eol=lf

@@ -2,6 +2,8 @@
 
 Go 1.26.8 模块化单体，MySQL 8 + Redis 7。唯一应用入口为 `cmd/server`。
 
+后端按 `transport/http → service → port → repository/adaptor` 分层；组合根在 `internal/app`，分层说明见 [docs/refactor.md](../docs/refactor.md)。
+
 ```sh
 docker compose -f ../compose.dev.yaml up -d --wait   # MySQL + Redis
 make run                                              # 带演示数据与本地验证码收件箱

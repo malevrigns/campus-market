@@ -1,6 +1,6 @@
 // Command flashbench 是限时抢购的压测与一致性校验工具（只用于本地/测试环境）。
 //
-// 它直接在数据库里批量创建压测用户和会话、通过 seckill.Engine 创建并预热一场活动，
+// 它直接在数据库里批量创建压测用户和会话，通过抢购仓储创建并预热一场活动，
 // 然后用 N 个并发连接模拟 M 个用户同时抢购，统计 QPS、延迟分位与状态码分布，
 // 最后等待异步落单完成，校验"订单数 == 抢到人数 ≤ 库存、DB/Redis 库存一致、无一人多单"。
 //
@@ -28,10 +28,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"qingfly/edu-mall/internal/domain"
 	"qingfly/edu-mall/internal/infra/mysqlx"
 	"qingfly/edu-mall/internal/infra/redisx"
-	"qingfly/edu-mall/internal/pkg/snowflake"
-	"qingfly/edu-mall/internal/seckill"
+	mysqlrepo "qingfly/edu-mall/internal/repository/mysql"
+	redisrepo "qingfly/edu-mall/internal/repository/redis"
 )
 
 func main() {
@@ -88,14 +89,14 @@ func main() {
 		exec("INSERT INTO users (id,email,name,password,created_at) VALUES "+u.String(), ua...)
 		exec("INSERT INTO sessions (hash,user_id,expires_at) VALUES "+s.String(), sa...)
 	}
-	node, _ := snowflake.NewNode(1023)
-	engine := seckill.New(db, rdb, seckill.Config{Prefix: *prefix}, func() (string, error) {
-		n, err := node.Next()
-		return "CM" + strconv.FormatInt(n, 10), err
-	}, seckill.Hooks{})
+	stores := mysqlrepo.New(db)
+	flashStore := redisrepo.NewFlashStore(rdb, *prefix, "bench", 15*time.Minute)
 	start := time.Now().Add(2 * time.Second)
-	sale, err := engine.Create(ctx, seckill.Sale{ID: "fs_bench_" + run, SellerID: organizer, Title: "压测活动", Description: "flashbench", Image: "https://example.test/bench.jpg", Campus: "东区", OriginalPriceCt: 1000, PriceCt: 100, TotalStock: *stock, StartAt: start.UnixMilli(), EndAt: start.Add(time.Hour).UnixMilli()})
-	if err != nil {
+	sale := domain.FlashSale{ID: "fs_bench_" + run, SellerID: organizer, Title: "压测活动", Description: "flashbench", Image: "https://example.test/bench.jpg", Campus: "东区", OriginalPriceCt: 1000, PriceCt: 100, TotalStock: *stock, Stock: *stock, StartAt: start.UnixMilli(), EndAt: start.Add(time.Hour).UnixMilli(), Status: "scheduled", CreatedAt: time.Now().UnixMilli()}
+	if err = stores.Flash.Create(ctx, sale); err != nil {
+		log.Fatal(err)
+	}
+	if err = flashStore.Preheat(ctx, sale, true); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("sale %s stock=%d starts in 2s, firing %d attempts with %d connections", sale.ID, *stock, *users, *conc)
@@ -157,7 +158,8 @@ func main() {
 	var dbStock, multi int
 	_ = db.QueryRowContext(ctx, "SELECT stock FROM flash_sales WHERE id=?", sale.ID).Scan(&dbStock)
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM (SELECT buyer_id FROM orders WHERE flash_sale_id=? GROUP BY buyer_id HAVING COUNT(*)>1) t", sale.ID).Scan(&multi)
-	live, _ := engine.Get(ctx, sale.ID)
+	live, _ := stores.Flash.Get(ctx, sale.ID)
+	flashStore.FillLiveStock(ctx, &live)
 	ok := orders == won && orders <= *stock && dbStock == *stock-orders && live.LiveStock == dbStock && multi == 0
 	fmt.Printf("\n=== consistency ===\nwinners %d  orders %d  stock %d  db_stock_left %d  redis_stock_left %d  multi_order_users %d\nall orders persisted after %v\nresult: %s\n",
 		won, orders, *stock, dbStock, live.LiveStock, multi, persistLag.Round(time.Millisecond), map[bool]string{true: "PASS (no oversell, one order per user)", false: "FAIL"}[ok])

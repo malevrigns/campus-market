@@ -1,5 +1,7 @@
 # API 契约
 
+> 机器可读版本：[openapi.yaml](openapi.yaml)；分层与事务边界见 [refactor.md](refactor.md)。
+
 应用路由统一前缀 `/api/v1`。成功返回 `{ "code": 0, "msg": "OK", "data": ... }`；失败使用真实 HTTP 状态和 `{code,msg,data:null}`。JSON 严格拒绝未知字段和尾随对象。ID 为不透明字符串；金额为整数分；时间为 Unix 毫秒。
 
 ## 登录与商品

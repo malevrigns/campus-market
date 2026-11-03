@@ -4,7 +4,8 @@
 依赖 MySQL 8 与 Redis 7。进程本身无状态，可以水平扩容为多个副本——跨实例需要协调的部分（推送、缓存失效、定时任务、发号）都经过 Redis。
 
 没有拆微服务的原因：团队规模和业务量都不需要；单体内的模块边界（包、接口、表）已经清晰，
-真正需要独立扩缩的只有抢购落库 worker，而它已经通过 Redis Stream 与请求链路解耦，将来要拆也只需把 `seckill.Engine.Run` 放到独立进程。
+真正需要独立扩缩的只有抢购落库 worker，而它已经通过 Redis Stream 与请求链路解耦，将来要拆也只需把 `FlashService.Run` 放到独立进程。
+本次后端已按“应用层 → 业务层 → 能力契约 → 数据适配器”重构，详见 [refactor.md](refactor.md)。
 
 ```mermaid
 flowchart LR
@@ -14,15 +15,20 @@ flowchart LR
   subgraph API[Go 进程（无状态，可多副本）]
     direction TB
     MW[中间件链<br/>请求ID/恢复/访问日志/CSRF/限流/Body上限]
-    H[HTTP 处理层 internal/platform]
-    SK[抢购引擎 internal/seckill]
+    H[应用层 internal/transport/http]
+    S[业务层 internal/service]
+    P[能力契约 internal/port]
+    D[数据适配 internal/repository]
+    SK[抢购业务/Redis 闸门 internal/service + repository/redis]
     PKG[基础组件 internal/pkg<br/>cache · lock · ratelimit · delayqueue · snowflake]
     W[后台任务<br/>Stream 消费 · 延迟队列 · 对账 · 预热 · 清理]
+    H --> S --> P --> D
+    SK --> P
   end
   A1 & A2 --- API
   API -->|事务 / 条件更新 / 唯一约束| M[(MySQL 8<br/>最终真相)]
   API -->|Lua / Stream / ZSET / Pub/Sub| R[(Redis 7<br/>缓存·闸门·队列·广播)]
-  API -->|RSA2| P[支付宝]
+  API -->|RSA2| PAY[支付宝]
   API -->|SSE 流式| L[大模型 / MCP 工具]
 ```
 
@@ -41,8 +47,15 @@ backend/
   internal/pkg/ratelimit  Redis Lua 滑动窗口 / 令牌桶，Redis 故障降级为本地限流
   internal/pkg/delayqueue ZSET 可靠延迟队列：原子领取、可见性超时重投、指数退避、死信
   internal/pkg/snowflake  雪花 ID（修复时钟回拨重复 bug），节点号用 Redis 租约分配
-  internal/seckill        限时抢购：Lua 预扣 + Stream 异步落库 + 补偿 + 对账
-  internal/platform       HTTP 处理与业务（身份、商品、订单、支付、IM、Agent）
+  internal/domain         业务实体、枚举、值对象与业务错误
+  internal/port           业务层依赖的能力契约（仓储/事务/缓存/推送/支付/验证码/LLM/MCP）
+  internal/service        业务用例：身份、商品、订单、支付、IM、Agent、抢购、运行态
+  internal/repository/mysql  MySQL：SQL、持久化模型映射、存储错误翻译
+  internal/repository/redis  Redis：缓存、会话、在线状态、热度、抢购 Lua/Stream、推送
+  internal/adaptor        支付宝、邮件/短信、OpenAI 兼容 LLM、MCP、图片存储
+  internal/transport/http 应用层：路由、中间件、DTO、Cookie、响应/错误映射、SSE/WS
+  internal/job            后台任务编排（每实例任务 + 分布式锁选主任务）
+  internal/app            组合根：构造顺序、依赖注入、启动/关闭
   internal/testenv        集成测试：每个用例独立数据库 + 独立 Redis 前缀
 ```
 
@@ -84,7 +97,7 @@ sequenceDiagram
   A-->>U: 201 订单
 ```
 
-### 2. 限时抢购（详见 `internal/seckill`）
+### 2. 限时抢购（业务见 `internal/service/flash.go`，Redis 闸门见 `internal/repository/redis/flash.go`）
 
 ```mermaid
 sequenceDiagram
@@ -128,7 +141,21 @@ Stream 不能用 `XADD MAXLEN` 截断（积压时会删掉未消费的订单）�
 - 处理函数 `expireOrder` 幂等：`SELECT ... FOR UPDATE` 锁订单行，已支付/已取消直接返回；已打开支付通道的订单交给支付对账，避免"用户刚付款就被关单"；
 - 每分钟一次的兜底扫描（分布式锁保证单实例执行，走 `(status, expires_at)` 索引）处理入队失败或 Redis 数据丢失的订单。
 
-### 4. 缓存（Cache-Aside）
+### 4. 分层与请求链
+
+```text
+HTTP 请求 → transport/http（绑定 DTO、身份、入口限流）
+          → service（业务规则、用例、事务边界）
+          → port（能力接口）
+          → repository/mysql | repository/redis | adaptor/*
+          → 响应 DTO / 领域错误 → transport/http 映射状态码
+```
+
+对象构造统一在 `internal/app`：基础设施 → 仓储/适配器 → 服务 → 路由 → 后台任务。
+业务服务只依赖 `internal/port`，SQL 与 Redis 命令不下沉到 controller/service；
+事务由服务层通过 `InTx` 决定边界，提交后的缓存失效、推送、延迟任务由服务层编排。
+
+### 5. 缓存（Cache-Aside）
 
 | 问题 | 手段 |
 |---|---|
@@ -141,7 +168,7 @@ Stream 不能用 `XADD MAXLEN` 截断（积压时会删掉未消费的订单）�
 
 缓存对象：商品详情（10 分钟）、首页默认信息流（30 秒，任何商品变更都删除）、抢购活动元数据（30 秒）、活动列表（5 秒）、热榜（60 秒）、会话（30 秒，见下）。
 
-### 5. 会话缓存与吊销
+### 6. 会话缓存与吊销
 
 每个登录请求都要校验会话（原来是三表 JOIN）。现在先查 `sess:<token摘要>`：
 
@@ -149,14 +176,14 @@ Stream 不能用 `XADD MAXLEN` 截断（积压时会删掉未消费的订单）�
 - 这样"读请求刚从 DB 读到有效会话 → 用户退出 → 读请求回填缓存"的竞态中，回填因为墓碑存在而失败，已吊销的会话不会被缓存复活；
 - 资料变更（绑定邮箱）则删除该用户全部会话缓存并延迟再删一次。
 
-### 6. IM 多实例推送
+### 7. IM 多实例推送
 
 - 消息 seq：`UPDATE conversations SET seq=seq+1`（拿会话行锁）→ 同事务读回 seq → `INSERT messages`。同一会话并发发送在行锁上排队，不重不漏；不同会话互不影响。
 - 推送：WebSocket 只推"有新消息"信号，客户端按 seq 游标拉取（推拉结合，推送丢失不丢消息）。
   `LiveHub.Notify` 先投递本实例连接，再 `PUBLISH` 到 Redis；其他实例订阅后投递给自己持有的连接。慢消费者（缓冲区满）断开，客户端重连补拉。
 - 在线状态：心跳刷新 `online:<uid>`（TTL 60s），会话列表 `MGET` 返回 `peer_online`。
 
-### 7. 限流
+### 8. 限流
 
 | 位置 | 算法 | 阈值 |
 |---|---|---|
@@ -168,7 +195,7 @@ Stream 不能用 `XADD MAXLEN` 截断（积压时会删掉未消费的订单）�
 
 两个 Lua 脚本都用 `redis.call('TIME')` 取时间，避免多实例时钟偏差。Redis 不可用时降级为进程内固定窗口（fail-open + 单机兜底）。
 
-### 8. 后台任务与分布式锁
+### 9. 后台任务与分布式锁
 
 | 任务 | 运行方式 |
 |---|---|
@@ -178,7 +205,7 @@ Stream 不能用 `XADD MAXLEN` 截断（积压时会删掉未消费的订单）�
 锁实现：`SET key token NX PX ttl`，Lua 比较 token 后 `DEL`/`PEXPIRE`；同时 `INCR` 一个围栏号（fencing token）。
 被锁保护的任务本身都是幂等的，锁只用于减少重复劳动——正确性永远由数据库约束保证（Redis 主从切换可能丢锁）。
 
-### 9. 雪花订单号
+### 10. 雪花订单号
 
 `41 位毫秒 + 10 位节点 + 12 位序列`。节点号不再手工配置，启动时用分布式锁在 `[0,1023]` 中抢占一个并持续续约；
 修复了原实现"时钟回拨 ≤5ms 时沿用上次时间戳却不递增序列号"导致的重复 ID。

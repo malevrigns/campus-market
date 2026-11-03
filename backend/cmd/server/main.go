@@ -18,10 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	application "qingfly/edu-mall/internal/app"
 	"qingfly/edu-mall/internal/config"
 	"qingfly/edu-mall/internal/infra/mysqlx"
 	"qingfly/edu-mall/internal/infra/redisx"
-	"qingfly/edu-mall/internal/platform"
 )
 
 func main() {
@@ -82,17 +82,17 @@ func run() error {
 		return err
 	}
 	defer rdb.Close()
-	app, err := platform.NewServer(db, rdb, cfg.App)
+	application, err := application.New(db, rdb, cfg.App)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		closeCtx, done := context.WithTimeout(context.Background(), 2*time.Second)
 		defer done()
-		app.Close(closeCtx)
+		application.Close(closeCtx)
 	}()
 	if cfg.SeedDemo {
-		if err = app.SeedDemo(); err != nil {
+		if err = application.SeedDemo(); err != nil {
 			return err
 		}
 	}
@@ -101,18 +101,18 @@ func run() error {
 	workersDone := make(chan struct{})
 	go func() {
 		defer close(workersDone)
-		app.Run(workersCtx)
+		application.Run(workersCtx)
 	}()
 
 	if cfg.PprofAddr != "" {
 		go servePprof(cfg.PprofAddr)
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: application.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("campus server started", "address", srv.Addr, "instance", app.Instance())
+		slog.Info("campus server started", "address", srv.Addr, "instance", application.Instance())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}

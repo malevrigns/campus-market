@@ -89,7 +89,7 @@ docker compose exec mysql sh -c 'mysqldump -ucampus -p"$MYSQL_PASSWORD" --single
 | Go 测试 / vet | 通过；含身份、越权、并发预占、金额篡改、回调重放、消息游标与幂等 |
 | Agent 故障回归 | 已观察截断误判、遗留运行和数据库锁测试失败；修正后通过 |
 | 支付对账 | 本地签名网关验证回调丢失补偿、验签失败保留库存、关闭不能逆转已付、31 单调度公平性 |
-| Linux race 检测 | WSL Ubuntu `CGO_ENABLED=1 go test -race ./internal/platform` 通过 |
+| Linux race 检测 | WSL Ubuntu `CGO_ENABLED=1 go test -race ./...` 通过 |
 | 前端单测 / build | 通过；覆盖分段 UTF-8 SSE、CRLF 和金额分转换；构建已拆包 |
 | 浏览器 | Chrome 1440/768/390/360 宽度；双账号上传、聊天、刷新、下单/取消通过；截图见 `frontend/test-results` |
 | npm audit | 0 已知漏洞 |

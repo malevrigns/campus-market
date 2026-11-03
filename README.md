@@ -129,10 +129,13 @@ sequenceDiagram
 
 更多链路（下单、关单、缓存、会话、IM 推送）与数据模型见 [docs/architecture.md](docs/architecture.md)。
 
+后端按 `transport/http → service → port → repository/adaptor` 分层，事务边界、能力契约与扩展影响矩阵见 [docs/refactor.md](docs/refactor.md)；
+机器可读接口契约见 [docs/openapi.yaml](docs/openapi.yaml)。
+
 ## 技术亮点
 
 <table>
-<tr><td width="22%"><b>限时抢购</b><br/><code>internal/seckill</code></td><td>
+<tr><td width="22%"><b>限时抢购</b><br/><code>internal/service/flash.go · internal/repository/redis/flash.go</code></td><td>
 Lua 原子完成"时间窗校验 → 一人一单 → 扣减库存 → 写入 Stream"，同步链路不访问数据库；订单号在入队前预生成，重复消费以主键冲突识别，天然幂等；PEL 超时 <code>XCLAIM</code> 重投，超过投递上限进入死信流并补偿；数据库条件扣减与 <code>UNIQUE(flash_sale_id, buyer_id)</code> 兜底；定时对账（连续两轮一致才用 CAS 修正）；Stream 只裁剪已全部确认的前缀。
 </td></tr>
 <tr><td><b>多级缓存</b><br/><code>internal/pkg/cache</code></td><td>
@@ -150,7 +153,7 @@ ZSET + Lua 原子领取，可见性超时重投，指数退避，死信集合；
 <tr><td><b>MySQL 设计</b><br/><code>migrations/0001_init.sql</code></td><td>
 条件更新 + 行锁防超卖；唯一键实现接口幂等（先插入、冲突再查，避免间隙锁死锁）；生成列 <code>listed</code> 让列表排序走索引；游标分页解决深分页；<code>OR</code> 改写为 <code>UNION ALL</code>；死锁 / 锁等待自动重试；迁移用 <code>GET_LOCK</code> 保证多实例互斥。
 </td></tr>
-<tr><td><b>即时通讯</b><br/><code>internal/platform/chat.go</code></td><td>
+<tr><td><b>即时通讯</b><br/><code>internal/service/chat.go</code></td><td>
 会话行锁内分配消息序号，并发发送不重不漏；推拉结合（推送信号、按序号拉取）；Redis Pub/Sub 跨实例投递；心跳维护在线状态。
 </td></tr>
 <tr><td><b>会话与发号</b></td><td>

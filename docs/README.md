@@ -4,7 +4,9 @@
 
 - [architecture.md](./architecture.md)：架构、数据模型与索引、抢购/下单/关单/缓存/IM 链路
 - [interview.md](./interview.md)：面试讲解手册（简历写法、亮点追问与回答）
-- [api.md](./api.md)：API 契约
+- [api.md](./api.md)：API 契约（可读版）
+- [openapi.yaml](./openapi.yaml)：OpenAPI 3.0 机器可读契约
+- [refactor.md](./refactor.md)：后端分层重构说明（能力契约、事务边界、扩展影响、兼容性）
 - [production-readiness.md](./production-readiness.md)：上线说明、运维与验证记录
 - [dynamic-agents.md](./dynamic-agents.md)、[account-verification.md](./account-verification.md)
 

@@ -1,0 +1,1050 @@
+openapi: 3.0.3
+info:
+  title: Campus Market API
+  version: 3.1.0
+  description: |
+    校园集市后端契约。成功响应统一为 `{code:0,msg:"OK",data:...}`；
+    失败使用真实 HTTP 状态码与 `{code,msg,data:null}`。金额单位为分，时间为 Unix 毫秒。
+    认证使用 HttpOnly Cookie；开发环境 Cookie 名带 Host 摘要，生产环境为 `__Host-campus_session`。
+servers:
+  - url: /
+tags:
+  - name: Auth
+  - name: Catalog
+  - name: Orders
+  - name: Payments
+  - name: Flash
+  - name: Chat
+  - name: Agent
+  - name: Admin
+  - name: System
+paths:
+  /api/v1/health:
+    get:
+      tags: [System]
+      summary: 健康检查（MySQL + Redis）
+      responses:
+        '200': {description: 正常, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/config:
+    get:
+      tags: [System]
+      summary: 公开运行配置
+      responses:
+        '200': {description: 配置, content: {application/json: {schema: {$ref: '#/components/schemas/PublicConfig'}}}}
+  /api/v1/auth/codes:
+    post:
+      tags: [Auth]
+      summary: 请求邮箱/短信验证码
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CodeRequest'}}}}
+      responses:
+        '200': {description: 已受理, content: {application/json: {schema: {$ref: '#/components/schemas/CodeChallenge'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: 验证码注册
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RegisterRequest'}}}}
+      responses:
+        '201': {description: 注册成功并写入会话 Cookie, content: {application/json: {schema: {$ref: '#/components/schemas/UserResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 密码登录
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LoginRequest'}}}}
+      responses:
+        '200': {description: 登录成功, content: {application/json: {schema: {$ref: '#/components/schemas/UserResponse'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/auth/code-login:
+    post:
+      tags: [Auth]
+      summary: 验证码登录
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CodeProof'}}}}
+      responses:
+        '200': {description: 登录成功, content: {application/json: {schema: {$ref: '#/components/schemas/UserResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: 验证码重置密码并吊销全部会话
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ResetPasswordRequest'}}}}
+      responses:
+        '200': {description: 已重置, content: {application/json: {schema: {$ref: '#/components/schemas/ResetPasswordResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/auth/bind:
+    post:
+      tags: [Auth]
+      summary: 登录后绑定/验证邮箱或手机号
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CodeProof'}}}}
+      responses:
+        '200': {description: 绑定后的用户, content: {application/json: {schema: {$ref: '#/components/schemas/UserResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: 当前用户
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 当前用户, content: {application/json: {schema: {$ref: '#/components/schemas/UserResponse'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: 退出登录并吊销会话
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 已退出, content: {application/json: {schema: {$ref: '#/components/schemas/LoggedOut'}}}}
+  /api/v1/auth/dev-inbox:
+    post:
+      tags: [Auth]
+      summary: 本地测试验证码收件箱（仅 loopback + AUTH_DELIVERY_MODE=local）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DevInboxRequest'}}}}
+      responses:
+        '200': {description: 验证码预览, content: {application/json: {schema: {$ref: '#/components/schemas/CodePreview'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/products:
+    get:
+      tags: [Catalog]
+      summary: 商品列表（offset 兼容 / cursor keyset 分页）
+      parameters:
+        - {name: q, in: query, schema: {type: string, maxLength: 100}}
+        - {name: category, in: query, schema: {type: string}}
+        - {name: campus, in: query, schema: {type: string}}
+        - {name: sort, in: query, schema: {type: string, enum: [new, price-asc, price-desc]}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 10000}}
+        - {name: cursor, in: query, description: 上一页的 next_cursor, schema: {type: string}}
+        - {name: mine, in: query, description: 当前用户发布, schema: {type: string, enum: ['1']}}
+        - {name: saved, in: query, description: 当前用户收藏, schema: {type: string, enum: ['1']}}
+      responses:
+        '200': {description: 商品页, content: {application/json: {schema: {$ref: '#/components/schemas/ProductPageResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Catalog]
+      summary: 发布商品
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PublishProduct'}}}}
+      responses:
+        '201': {description: 已发布, content: {application/json: {schema: {$ref: '#/components/schemas/ProductResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/products/hot:
+    get:
+      tags: [Catalog]
+      summary: 近 3 天热度榜
+      parameters: [{name: limit, in: query, schema: {type: integer, default: 10, maximum: 50}}]
+      responses:
+        '200': {description: 榜单, content: {application/json: {schema: {$ref: '#/components/schemas/HotListResponse'}}}}
+  /api/v1/products/{id}:
+    get:
+      tags: [Catalog]
+      summary: 商品详情
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 商品, content: {application/json: {schema: {$ref: '#/components/schemas/ProductResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Catalog]
+      summary: 下架本人可售商品
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已下架, content: {application/json: {schema: {$ref: '#/components/schemas/WithdrawResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/uploads:
+    post:
+      tags: [Catalog]
+      summary: 上传商品图片（JPG/PNG ≤5 MB，重新编码去除元数据）
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [image], properties: {image: {type: string, format: binary}}}}}}
+      responses:
+        '201': {description: 上传成功, content: {application/json: {schema: {$ref: '#/components/schemas/UploadResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '413': {description: 图片过大}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/favorites:
+    get:
+      tags: [Catalog]
+      summary: 收藏商品 ID 列表
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 收藏 ID, content: {application/json: {schema: {$ref: '#/components/schemas/FavoritesResponse'}}}}
+  /api/v1/favorites/{id}:
+    put:
+      tags: [Catalog]
+      summary: 收藏商品（幂等）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已收藏, content: {application/json: {schema: {$ref: '#/components/schemas/FavoriteResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Catalog]
+      summary: 取消收藏（幂等）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已取消, content: {application/json: {schema: {$ref: '#/components/schemas/FavoriteResponse'}}}}
+  /api/v1/orders:
+    post:
+      tags: [Orders]
+      summary: 创建订单（服务端定价 + 库存预占 + 幂等）
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreateOrder'}}}}
+      responses:
+        '201': {description: 新订单, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '200': {description: 幂等重放返回原订单, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    get:
+      tags: [Orders]
+      summary: 我买/我卖的最近 200 张订单
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 订单列表, content: {application/json: {schema: {$ref: '#/components/schemas/OrderListResponse'}}}}
+  /api/v1/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: 订单详情（仅买卖双方）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 订单与事件, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/orders/{id}/cancel:
+    post:
+      tags: [Orders]
+      summary: 买家取消待支付订单
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已取消, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/orders/{id}/handover:
+    post:
+      tags: [Orders]
+      summary: 卖家确认面交（paid → handover）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已面交, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/orders/{id}/complete:
+    post:
+      tags: [Orders]
+      summary: 买家确认完成（handover → completed）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已完成, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/orders/{id}/refund:
+    post:
+      tags: [Orders]
+      summary: 申请退款（仅记录申请，不等于已退款）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 6, maxLength: 1500}}}}}}
+      responses:
+        '200': {description: 已登记, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/orders/{id}/pay:
+    post:
+      tags: [Payments]
+      summary: 创建支付宝收银台链接
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [method], properties: {method: {type: string, enum: [alipay]}, mobile: {type: boolean, default: false}}}}}}
+      responses:
+        '200': {description: 服务端签名链接, content: {application/json: {schema: {$ref: '#/components/schemas/PaymentStartResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/payments/alipay/notify:
+    post:
+      tags: [Payments]
+      summary: 支付宝异步回调（RSA2 验签，纯文本 success/failure）
+      requestBody: {required: true, content: {application/x-www-form-urlencoded: {schema: {type: object, additionalProperties: {type: string}}}}}
+      responses:
+        '200': {description: 已接受，响应体为 `success`}
+        '400': {description: 验签或金额校验失败，响应体为 `failure`}
+        '409': {description: 回调身份或交易号冲突，响应体为 `failure`}
+  /api/v1/flash-sales:
+    get:
+      tags: [Flash]
+      summary: 限时抢购活动列表（含实时库存与 server_time）
+      responses:
+        '200': {description: 活动列表, content: {application/json: {schema: {$ref: '#/components/schemas/FlashListResponse'}}}}
+  /api/v1/flash-sales/{id}:
+    get:
+      tags: [Flash]
+      summary: 活动详情
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 活动详情, content: {application/json: {schema: {$ref: '#/components/schemas/FlashDetailResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/flash-sales/{id}/attempts:
+    post:
+      tags: [Flash]
+      summary: 抢购（202 排队落单中；200 已有资格）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '202': {description: 已抢到，订单异步生成, content: {application/json: {schema: {$ref: '#/components/schemas/TicketResponse'}}}}
+        '200': {description: 重复请求返回已有资格, content: {application/json: {schema: {$ref: '#/components/schemas/TicketResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '410': {description: 活动已结束或下线}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/flash-sales/{id}/attempts/me:
+    get:
+      tags: [Flash]
+      summary: 查询我的抢购资格与订单状态
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 资格, content: {application/json: {schema: {$ref: '#/components/schemas/TicketResponse'}}}}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/conversations:
+    post:
+      tags: [Chat]
+      summary: 为商品创建/复用买家与卖家的会话
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [product_id], properties: {product_id: {type: string}}}}}}
+      responses:
+        '201': {description: 新建会话, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationCreatedResponse'}}}}
+        '200': {description: 复用已有会话, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationCreatedResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    get:
+      tags: [Chat]
+      summary: 最近 200 个会话（含对方在线状态与未读数）
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 会话列表, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationListResponse'}}}}
+  /api/v1/conversations/{id}/messages:
+    get:
+      tags: [Chat]
+      summary: 按 seq 游标增量拉取消息
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: after, in: query, schema: {type: integer, minimum: 0}}
+      responses:
+        '200': {description: 消息页, content: {application/json: {schema: {$ref: '#/components/schemas/MessagePageResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Chat]
+      summary: 发送消息（client_msg_id 幂等）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [client_msg_id, content], properties: {client_msg_id: {type: string, minLength: 8, maxLength: 128}, content: {type: string, minLength: 1, maxLength: 4000}}}}}}
+      responses:
+        '201': {description: 新消息, content: {application/json: {schema: {$ref: '#/components/schemas/MessageResponse'}}}}
+        '200': {description: 幂等重发, content: {application/json: {schema: {$ref: '#/components/schemas/MessageResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/conversations/{id}/read:
+    post:
+      tags: [Chat]
+      summary: 上报已读水位（只前进不后退）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [seq], properties: {seq: {type: integer, minimum: 0}}}}}}
+      responses:
+        '200': {description: 已更新, content: {application/json: {schema: {$ref: '#/components/schemas/ReadResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/ws:
+    get:
+      tags: [Chat]
+      summary: WebSocket 实时通知（Cookie 鉴权，25 秒心跳）
+      security: [{cookieAuth: []}]
+      responses:
+        '101': {description: 升级成功}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /api/v1/agents:
+    get:
+      tags: [Agent]
+      summary: 已发布助手列表
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 助手列表, content: {application/json: {schema: {$ref: '#/components/schemas/PublicAgentListResponse'}}}}
+  /api/v1/agent/threads:
+    get:
+      tags: [Agent]
+      summary: 我的助手会话
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 会话列表, content: {application/json: {schema: {$ref: '#/components/schemas/AgentThreadListResponse'}}}}
+  /api/v1/agent/threads/{id}:
+    get:
+      tags: [Agent]
+      summary: 会话最近 30 轮历史
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 历史, content: {application/json: {schema: {$ref: '#/components/schemas/AgentHistoryResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/agent/runs:
+    post:
+      tags: [Agent]
+      summary: 发起一次 Agent 回答（SSE：start/delta/tool/error/done）
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AgentRunRequest'}}}}
+      responses:
+        '200': {description: SSE 流, content: {text/event-stream: {schema: {type: string}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+  /api/v1/admin/flash-sales:
+    post:
+      tags: [Admin]
+      summary: 创建抢购活动
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreateFlashSale'}}}}
+      responses:
+        '201': {description: 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/FlashSaleResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/admin/flash-sales/{id}/cancel:
+    post:
+      tags: [Admin]
+      summary: 下线抢购活动（已生成订单不受影响）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已下线, content: {application/json: {schema: {$ref: '#/components/schemas/CancelledResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/admin/runtime:
+    get:
+      tags: [Admin]
+      summary: 实例、雪花节点、缓存、延迟队列、抢购 Stream、DB 连接池
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 运行态, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeResponse'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/admin/agent-catalog:
+    get:
+      tags: [Admin]
+      summary: 助手目录（能力、草稿、模型连接、MCP 服务器）
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 目录, content: {application/json: {schema: {$ref: '#/components/schemas/AdminCatalogResponse'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/admin/capabilities:
+    post:
+      tags: [Admin]
+      summary: 创建模型/内置工具/MCP 能力
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CapabilityInput'}}}}
+      responses:
+        '201': {description: 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/CapabilityResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+  /api/v1/admin/capabilities/{id}:
+    put:
+      tags: [Admin]
+      summary: 更新能力（乐观锁 revision）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CapabilityInput'}}}}
+      responses:
+        '200': {description: 已更新, content: {application/json: {schema: {$ref: '#/components/schemas/CapabilityResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Admin]
+      summary: 删除未被引用的能力
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 已删除, content: {application/json: {schema: {$ref: '#/components/schemas/DeletedResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/admin/agents:
+    post:
+      tags: [Admin]
+      summary: 创建助手草稿
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AgentInput'}}}}
+      responses:
+        '201': {description: 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/AgentDefinitionResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/admin/agents/{id}:
+    put:
+      tags: [Admin]
+      summary: 更新助手草稿（乐观锁 revision）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AgentInput'}}}}
+      responses:
+        '200': {description: 已更新, content: {application/json: {schema: {$ref: '#/components/schemas/AgentDefinitionResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Admin]
+      summary: 归档助手
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision], properties: {revision: {type: integer}}}}}}
+      responses:
+        '200': {description: 已归档, content: {application/json: {schema: {$ref: '#/components/schemas/ArchivedResponse'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/admin/agents/{id}/publish:
+    post:
+      tags: [Admin]
+      summary: 发布助手版本（不可变快照）
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision], properties: {revision: {type: integer}, source_version: {type: integer, description: 从历史版本回滚发布时填写}}}}}}
+      responses:
+        '200': {description: 已发布, content: {application/json: {schema: {$ref: '#/components/schemas/AgentDefinitionResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/admin/agents/{id}/versions:
+    get:
+      tags: [Admin]
+      summary: 助手历史版本
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 版本列表, content: {application/json: {schema: {$ref: '#/components/schemas/AgentVersionListResponse'}}}}
+  /api/v1/admin/mcp/{id}/tools:
+    get:
+      tags: [Admin]
+      summary: 发现 MCP 只读工具
+      security: [{cookieAuth: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: 工具列表, content: {application/json: {schema: {$ref: '#/components/schemas/MCPToolListResponse'}}}}
+        '502': {$ref: '#/components/responses/BadGateway'}
+  /api/v1/admin/agent-audit:
+    get:
+      tags: [Admin]
+      summary: 最近 100 条助手审计
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 审计, content: {application/json: {schema: {$ref: '#/components/schemas/AgentAuditListResponse'}}}}
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: campus_session
+      description: 生产环境使用 `__Host-campus_session`；开发环境 Cookie 名带 Host 摘要并兼容 `campus_session`。
+  responses:
+    BadRequest: {description: 参数或业务校验失败, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: 未登录或会话过期, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: 无权限, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: 不存在或无权访问, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: 状态冲突或幂等键复用, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooManyRequests: {description: 限流, headers: {Retry-After: {schema: {type: integer}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    BadGateway: {description: 上游服务失败, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    ServiceUnavailable: {description: 服务暂不可用, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: {type: integer, example: 409}
+        msg: {type: string, example: 商品已被预订或售出}
+        data: {nullable: true}
+    Health:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {status: {type: string, example: ok}}}}
+    PublicConfig:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data:
+          type: object
+          properties:
+            payments: {type: object, properties: {alipay: {type: boolean}}}
+            agent_available: {type: boolean}
+            categories: {type: array, items: {type: string}}
+            campuses: {type: array, items: {type: string}}
+            auth:
+              type: object
+              properties: {email_code: {type: boolean}, sms_code: {type: boolean}, local_inbox: {type: boolean}, password_min_length: {type: integer}}
+    CodeRequest:
+      type: object
+      required: [channel, target, purpose]
+      properties:
+        channel: {type: string, enum: [email, sms]}
+        target: {type: string}
+        purpose: {type: string, enum: [register, login, reset_password, bind]}
+    CodeProof:
+      type: object
+      required: [channel, target, challenge_id, code]
+      properties:
+        channel: {type: string, enum: [email, sms]}
+        target: {type: string}
+        challenge_id: {type: string}
+        code: {type: string, pattern: '^[0-9]{6}$'}
+    RegisterRequest:
+      allOf:
+        - $ref: '#/components/schemas/CodeProof'
+        - type: object
+          required: [name, password]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 24}
+            password: {type: string, minLength: 8, maxLength: 72, format: password}
+            email: {type: string, format: email}
+            phone: {type: string}
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        account: {type: string, description: 邮箱或手机号}
+        email: {type: string, description: 兼容旧字段}
+        password: {type: string, format: password}
+    ResetPasswordRequest:
+      allOf:
+        - $ref: '#/components/schemas/CodeProof'
+        - type: object
+          required: [password]
+          properties: {password: {type: string, minLength: 8, maxLength: 72, format: password}}
+    ResetPasswordResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {password_reset: {type: boolean}, logged_out: {type: boolean}}}
+    LoggedOut:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {logged_out: {type: boolean}}}}
+    DevInboxRequest:
+      type: object
+      required: [challenge_id, delivery_token]
+      properties: {challenge_id: {type: string}, delivery_token: {type: string}}
+    CodeChallenge:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data:
+          type: object
+          properties:
+            challenge_id: {type: string}
+            expires_in: {type: integer, example: 300}
+            retry_after: {type: integer, example: 60}
+            target: {type: string, example: s***@example.com}
+            delivery: {type: string, enum: [sent, local]}
+            delivery_token: {type: string, description: 仅本地测试模式返回}
+    CodePreview:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data:
+          type: object
+          properties: {code: {type: string}, target: {type: string}, expires_at: {type: integer}, notice: {type: string}}
+    User:
+      type: object
+      properties:
+        is_admin: {type: boolean}
+        id: {type: string}
+        name: {type: string}
+        email: {type: string}
+        phone: {type: string}
+        email_verified: {type: boolean}
+        phone_verified: {type: boolean}
+    UserResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/User'}}
+    Product:
+      type: object
+      properties:
+        id: {type: string}
+        seller_id: {type: string}
+        seller_name: {type: string}
+        title: {type: string}
+        description: {type: string}
+        price_ct: {type: integer, description: 分}
+        category: {type: string}
+        campus: {type: string}
+        condition: {type: string}
+        image: {type: string}
+        status: {type: string, enum: [available, reserved, sold, withdrawn]}
+        demo: {type: boolean}
+        created_at: {type: integer, format: int64}
+    ProductPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Product'}}
+        total: {type: integer}
+        has_more: {type: boolean}
+        next_cursor: {type: string}
+    ProductResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/Product'}}
+    ProductPageResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/ProductPage'}}
+    HotListResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {items: {type: array, items: {allOf: [{$ref: '#/components/schemas/Product'}, {type: object, properties: {score: {type: number}}}]}}}}
+    PublishProduct:
+      type: object
+      required: [title, description, price_ct, category, campus, condition, image]
+      properties:
+        title: {type: string, minLength: 2, maxLength: 80}
+        description: {type: string, maxLength: 3000}
+        price_ct: {type: integer, minimum: 1, maximum: 10000000}
+        category: {type: string}
+        campus: {type: string}
+        condition: {type: string}
+        image: {type: string, description: HTTPS URL 或上传返回的 /media 路径}
+    UploadResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {url: {type: string}}}}
+    FavoritesResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {ids: {type: array, items: {type: string}}}}}
+    FavoriteResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {saved: {type: boolean}}}}
+    WithdrawResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {withdrawn: {type: boolean}}}}
+    Order:
+      type: object
+      properties:
+        id: {type: string, example: CM123456789}
+        buyer_id: {type: string}
+        seller_id: {type: string}
+        product_id: {type: string}
+        flash_sale_id: {type: string}
+        title: {type: string}
+        image: {type: string}
+        amount_ct: {type: integer}
+        campus: {type: string}
+        status: {type: string, enum: [pending, paid, handover, completed, cancelled, refund_requested]}
+        created_at: {type: integer}
+        updated_at: {type: integer}
+        expires_at: {type: integer}
+        events: {type: array, items: {type: object, properties: {status: {type: string}, created_at: {type: integer}}}}
+    OrderResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/Order'}}
+    OrderListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Order'}}}}}
+    CreateOrder:
+      type: object
+      required: [product_id, campus, idempotency_key]
+      properties:
+        product_id: {type: string}
+        campus: {type: string}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+    PaymentStartResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {checkout_url: {type: string}, order_id: {type: string}, amount_ct: {type: integer}}}
+    FlashSale:
+      type: object
+      properties:
+        id: {type: string}
+        seller_id: {type: string}
+        seller_name: {type: string}
+        title: {type: string}
+        description: {type: string}
+        image: {type: string}
+        campus: {type: string}
+        original_price_ct: {type: integer}
+        price_ct: {type: integer}
+        total_stock: {type: integer}
+        stock: {type: integer}
+        start_at: {type: integer}
+        end_at: {type: integer}
+        status: {type: string}
+        created_at: {type: integer}
+        phase: {type: string, enum: [upcoming, active, ended, cancelled]}
+        live_stock: {type: integer, description: Redis 实时剩余；-1 表示未知}
+    FlashSaleResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/FlashSale'}}
+    FlashListResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/FlashSale'}}, server_time: {type: integer}}}
+    FlashDetailResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {sale: {$ref: '#/components/schemas/FlashSale'}, server_time: {type: integer}}}
+    Ticket:
+      type: object
+      properties:
+        sale_id: {type: string}
+        order_id: {type: string}
+        state: {type: string, enum: [queued, success, failed, cancelled, none]}
+        reason: {type: string}
+        order_status: {type: string}
+    TicketResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/Ticket'}}
+    CreateFlashSale:
+      type: object
+      required: [title, description, image, campus, original_price_ct, price_ct, total_stock, start_at, end_at]
+      properties:
+        title: {type: string}
+        description: {type: string}
+        image: {type: string}
+        campus: {type: string}
+        original_price_ct: {type: integer, minimum: 1}
+        price_ct: {type: integer, minimum: 1}
+        total_stock: {type: integer, minimum: 1, maximum: 100000}
+        start_at: {type: integer}
+        end_at: {type: integer}
+    CancelledResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {cancelled: {type: boolean}}}}
+    Conversation:
+      type: object
+      properties:
+        id: {type: string}
+        product_id: {type: string}
+        product_title: {type: string}
+        image: {type: string}
+        peer_id: {type: string}
+        peer_name: {type: string}
+        peer_online: {type: boolean}
+        seq: {type: integer}
+        unread: {type: integer}
+        last_message: {type: string}
+        updated_at: {type: integer}
+    ConversationListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Conversation'}}}}}
+    ConversationCreatedResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {id: {type: string}}}}
+    Message:
+      type: object
+      properties:
+        id: {type: string}
+        conversation_id: {type: string}
+        sender_id: {type: string}
+        client_msg_id: {type: string}
+        seq: {type: integer}
+        content: {type: string}
+        created_at: {type: integer}
+    MessageResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/Message'}}
+    MessagePageResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Message'}}, next_seq: {type: integer}, has_more: {type: boolean}}}
+    ReadResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {read: {type: boolean}}}}
+    AgentThread:
+      type: object
+      properties: {id: {type: string}, title: {type: string}, created_at: {type: integer}, agent_id: {type: string}}
+    AgentThreadListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AgentThread'}}}}}
+    AgentRun:
+      type: object
+      properties:
+        agent_id: {type: string}
+        agent_version: {type: integer}
+        agent_name: {type: string}
+        id: {type: string}
+        thread_id: {type: string}
+        prompt: {type: string}
+        answer: {type: string}
+        status: {type: string, enum: [running, completed, failed, cancelled]}
+        error: {type: string}
+        created_at: {type: integer}
+    AgentHistoryResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AgentRun'}}, title: {type: string}, agent_id: {type: string}}}
+    AgentRunRequest:
+      type: object
+      required: [prompt, idempotency_key]
+      properties:
+        agent_id: {type: string}
+        prompt: {type: string, minLength: 1, maxLength: 2000}
+        thread_id: {type: string}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128}
+    PublicAgent:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        welcome: {type: string}
+        suggestions: {type: array, items: {type: string}}
+        version: {type: integer}
+        tools: {type: array, items: {type: object, properties: {name: {type: string}, kind: {type: string}}}}
+        available: {type: boolean}
+    PublicAgentListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/PublicAgent'}}}}}
+    CapabilityConfig:
+      type: object
+      properties:
+        provider: {type: string}
+        model: {type: string}
+        tool: {type: string}
+        server_id: {type: string}
+        read_only: {type: boolean}
+        input_schema: {type: object}
+    Capability:
+      type: object
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [model, tool, mcp]}
+        name: {type: string}
+        description: {type: string}
+        config: {$ref: '#/components/schemas/CapabilityConfig'}
+        enabled: {type: boolean}
+        revision: {type: integer}
+        updated_at: {type: integer}
+    CapabilityInput:
+      allOf:
+        - type: object
+          required: [kind, name, config]
+          properties:
+            kind: {type: string, enum: [model, tool, mcp]}
+            name: {type: string}
+            description: {type: string}
+            config: {$ref: '#/components/schemas/CapabilityConfig'}
+            enabled: {type: boolean}
+        - type: object
+          properties: {revision: {type: integer, description: 更新时必填}}
+    CapabilityResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/Capability'}}
+    AgentDraft:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        system_prompt: {type: string}
+        welcome: {type: string}
+        suggestions: {type: array, items: {type: string}}
+        model_capability_id: {type: string}
+        tool_capability_ids: {type: array, items: {type: string}}
+        max_iterations: {type: integer, minimum: 1, maximum: 8}
+        max_tokens: {type: integer, minimum: 128, maximum: 4096}
+        timeout_seconds: {type: integer, minimum: 10, maximum: 90}
+        enabled: {type: boolean}
+    AgentDefinition:
+      type: object
+      properties:
+        id: {type: string}
+        draft: {$ref: '#/components/schemas/AgentDraft'}
+        enabled: {type: boolean}
+        revision: {type: integer}
+        published_version: {type: integer}
+        has_unpublished_changes: {type: boolean}
+        updated_at: {type: integer}
+    AgentInput:
+      allOf:
+        - $ref: '#/components/schemas/AgentDraft'
+        - type: object
+          properties: {revision: {type: integer}}
+    AgentDefinitionResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {$ref: '#/components/schemas/AgentDefinition'}}
+    AgentSnapshot:
+      allOf:
+        - $ref: '#/components/schemas/AgentDraft'
+        - type: object
+          properties:
+            agent_id: {type: string}
+            version: {type: integer}
+            model: {$ref: '#/components/schemas/Capability'}
+            tools: {type: array, items: {$ref: '#/components/schemas/Capability'}}
+    AgentVersion:
+      type: object
+      properties:
+        version: {type: integer}
+        snapshot: {$ref: '#/components/schemas/AgentSnapshot'}
+        published_by: {type: string}
+        published_at: {type: integer}
+    AgentVersionListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AgentVersion'}}}}}
+    AdminCatalogResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data:
+          type: object
+          properties:
+            capabilities: {type: array, items: {$ref: '#/components/schemas/Capability'}}
+            agents: {type: array, items: {$ref: '#/components/schemas/AgentDefinition'}}
+            providers: {type: array, items: {type: object, properties: {id: {type: string}, default_model: {type: string}, ready: {type: boolean}}}}
+            mcp_servers: {type: array, items: {type: string}}
+    MCPTool:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        inputSchema: {type: object}
+        annotations: {type: object, properties: {readOnlyHint: {type: boolean}}}
+    MCPToolListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/MCPTool'}}}}}
+    AgentAudit:
+      type: object
+      properties: {actor_id: {type: string}, action: {type: string}, target_id: {type: string}, revision: {type: integer}, created_at: {type: integer}}
+    AgentAuditListResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AgentAudit'}}}}}
+    DeletedResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {deleted: {type: boolean}}}}
+    ArchivedResponse:
+      type: object
+      properties: {code: {type: integer}, msg: {type: string}, data: {type: object, properties: {archived: {type: boolean}}}}
+    RuntimeResponse:
+      type: object
+      properties:
+        code: {type: integer}
+        msg: {type: string}
+        data:
+          type: object
+          properties:
+            instance: {type: string}
+            snowflake: {type: integer}
+            cache: {type: object}
+            order_timeout: {type: object, properties: {ready: {type: integer}, inflight: {type: integer}, dead: {type: integer}}}
+            flash: {type: object}
+            db_pool: {type: object, properties: {open: {type: integer}, in_use: {type: integer}, idle: {type: integer}, wait_count: {type: integer}, wait_ms: {type: integer}}}

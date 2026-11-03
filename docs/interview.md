@@ -33,7 +33,7 @@
 
 ## 4. 限时抢购
 
-**代码**：`internal/seckill/`，HTTP 层 `internal/platform/flash.go`，压测 `cmd/flashbench`，测试 `internal/seckill/seckill_test.go`。
+**代码**：`internal/service/flash.go` + `internal/repository/redis/flash.go`，HTTP 层 `internal/transport/http/flash_handler.go`，压测 `cmd/flashbench`，端到端测试 `internal/app/features_test.go`。
 
 ### 4.1 链路
 

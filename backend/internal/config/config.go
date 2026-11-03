@@ -1,4 +1,5 @@
-// Package config 从环境变量读取配置（12-factor），启动时一次性校验，错误配置直接拒绝启动。
+// Package config 从环境变量读取配置（12-factor），启动时一次性校验。
+// 它只负责“读值与基础格式校验”，业务与连接初始化由 app 组合根完成。
 package config
 
 import (
@@ -7,9 +8,11 @@ import (
 	"strconv"
 	"time"
 
+	"qingfly/edu-mall/internal/adaptor/alipay"
+	"qingfly/edu-mall/internal/adaptor/verification"
+	"qingfly/edu-mall/internal/domain"
 	"qingfly/edu-mall/internal/infra/mysqlx"
 	"qingfly/edu-mall/internal/infra/redisx"
-	"qingfly/edu-mall/internal/platform"
 )
 
 type Config struct {
@@ -18,7 +21,28 @@ type Config struct {
 	SeedDemo  bool
 	MySQL     mysqlx.Options
 	Redis     redisx.Options
-	App       platform.Config
+	App       App
+}
+
+// App 是业务运行时配置。密钥只保存在适配器配置中，不进入领域快照。
+type App struct {
+	Production        bool
+	PublicOrigin      string
+	UploadDir         string
+	AdminUserIDs      string
+	TrustedProxyCIDRs string
+	RedisPrefix       string
+	Instance          string
+	NodeID            int
+	PaymentWindow     time.Duration
+	AuthCodeSecret    string
+	AuthDelivery      verification.Config
+	Alipay            alipay.Config
+	ModelURL          string
+	ModelKey          string
+	ModelName         string
+	ModelProviders    map[string]domain.ModelProvider
+	MCPServers        map[string]domain.MCPServer
 }
 
 func env(name, fallback string) string {
@@ -78,15 +102,13 @@ func Load() (Config, error) {
 	a := &c.App
 	a.Production = os.Getenv("APP_ENV") == "production"
 	a.PublicOrigin = os.Getenv("PUBLIC_ORIGIN")
-	a.AlipayAppID = os.Getenv("ALIPAY_APP_ID")
-	a.AlipaySellerID = os.Getenv("ALIPAY_SELLER_ID")
-	if a.AlipayPrivateKey, err = keyFile("ALIPAY_PRIVATE_KEY_FILE"); err != nil {
+	a.Alipay = alipay.Config{AppID: os.Getenv("ALIPAY_APP_ID"), SellerID: os.Getenv("ALIPAY_SELLER_ID"), Gateway: os.Getenv("ALIPAY_GATEWAY"), PublicOrigin: a.PublicOrigin, Production: a.Production}
+	if a.Alipay.PrivateKey, err = keyFile("ALIPAY_PRIVATE_KEY_FILE"); err != nil {
 		return c, err
 	}
-	if a.AlipayPublicKey, err = keyFile("ALIPAY_PUBLIC_KEY_FILE"); err != nil {
+	if a.Alipay.PublicKey, err = keyFile("ALIPAY_PUBLIC_KEY_FILE"); err != nil {
 		return c, err
 	}
-	a.AlipayGateway = os.Getenv("ALIPAY_GATEWAY")
 	a.ModelURL = os.Getenv("MODEL_BASE_URL")
 	a.ModelKey = os.Getenv("MODEL_API_KEY")
 	a.ModelName = os.Getenv("MODEL_NAME")
@@ -111,8 +133,8 @@ func Load() (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	a.AuthDelivery = platform.DeliveryConfig{Mode: env("AUTH_DELIVERY_MODE", "disabled"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPPort: smtpPort, SMTPUser: os.Getenv("SMTP_USER"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), SMTPTLSMode: os.Getenv("SMTP_TLS_MODE"), SMSAccessKeyID: os.Getenv("SMS_ACCESS_KEY_ID"), SMSAccessKeySecret: os.Getenv("SMS_ACCESS_KEY_SECRET"), SMSSignName: os.Getenv("SMS_SIGN_NAME"), SMSTemplateCode: os.Getenv("SMS_TEMPLATE_CODE"), SMSRegion: os.Getenv("SMS_REGION")}
-	if err = platform.LoadAgentConnections(os.Getenv("AGENT_CONNECTIONS_FILE"), a); err != nil {
+	a.AuthDelivery = verification.Config{Mode: env("AUTH_DELIVERY_MODE", "disabled"), SMTPHost: os.Getenv("SMTP_HOST"), SMTPPort: smtpPort, SMTPUser: os.Getenv("SMTP_USER"), SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"), SMTPTLSMode: os.Getenv("SMTP_TLS_MODE"), SMSAccessKeyID: os.Getenv("SMS_ACCESS_KEY_ID"), SMSAccessKeySecret: os.Getenv("SMS_ACCESS_KEY_SECRET"), SMSSignName: os.Getenv("SMS_SIGN_NAME"), SMSTemplateCode: os.Getenv("SMS_TEMPLATE_CODE"), SMSRegion: os.Getenv("SMS_REGION")}
+	if err = loadAgentConnections(os.Getenv("AGENT_CONNECTIONS_FILE"), a); err != nil {
 		return c, fmt.Errorf("agent connections configuration rejected: %w", err)
 	}
 	if c.SeedDemo && a.Production {
